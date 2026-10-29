@@ -1,0 +1,93 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BusinessUserRole {
+  OWNER
+  ADMIN
+  STAFF
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESSFUL
+  FAILED
+}
+
+model BusinessAccount {
+  id            String         @id @default(cuid())
+  businessName  String
+  email         String         @unique
+  phone         String?
+  currency      String         @default("NGN")
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  users         BusinessUser[]
+  customers     Customer[]
+  payments      Payment[]
+}
+
+model BusinessUser {
+  id                String           @id @default(cuid())
+  businessAccountId String
+  fullName          String
+  email             String           @unique
+  passwordHash      String
+  role              BusinessUserRole @default(OWNER)
+  isActive          Boolean          @default(true)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  businessAccount   BusinessAccount  @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+
+  @@index([businessAccountId])
+}
+
+model Customer {
+  id                String          @id @default(cuid())
+  businessAccountId String
+  name              String
+  email             String?
+  phone             String?
+  reference         String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  payments      Payment[]
+
+  businessAccount   BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+
+  @@index([businessAccountId])
+  @@unique([businessAccountId, reference])
+}
+
+
+model Payment {
+  id                String        @id @default(cuid())
+  businessAccountId String
+  customerId        String?
+  idempotencyKey   String
+  reference         String        @unique
+  amount            BigInt
+  currency          String        @default("NGN")
+  status            PaymentStatus @default(PENDING)
+  description       String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  businessAccount   BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  customer          Customer?       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@unique([businessAccountId, idempotencyKey])
+  @@index([businessAccountId])
+  @@index([customerId])
+  @@index([businessAccountId, status])
+}

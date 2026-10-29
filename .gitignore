@@ -1,0 +1,30 @@
+
+# Dependencies
+node_modules/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local editor and OS files
+.vscode/
+.DS_Store
+
+# Generated Prisma client
+/src/generated/prisma/
+
+# Private keys and certificates
+*.pem
+*.key
+# Local debugging utilities
+/inspect-pending-payments.ts
