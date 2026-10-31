@@ -1,7 +1,7 @@
-
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { BusinessUserRole } from "../generated/prisma/enums";
+import { prisma } from "../lib/prisma";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
@@ -23,11 +23,11 @@ declare global {
   }
 }
 
-export function authenticate(
+export async function authenticate(
   req: Request,
   res: Response,
   next: NextFunction,
-): void {
+): Promise<void> {
   const authorization = req.headers.authorization;
 
   if (!authorization || !authorization.startsWith("Bearer ")) {
@@ -70,14 +70,40 @@ export function authenticate(
       return;
     }
 
+    const user = await prisma.businessUser.findFirst({
+      where: {
+        id: payload.sub,
+        businessAccountId: payload.businessAccountId,
+        isActive: true,
+        businessAccount: {
+          isActive: true,
+        },
+      },
+      select: {
+        id: true,
+        businessAccountId: true,
+        role: true,
+      },
+    });
+
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        message: "Account is inactive or no longer available.",
+      });
+      return;
+    }
+
     req.auth = {
-      userId: payload.sub,
-      businessAccountId: payload.businessAccountId,
-      role: payload.role as BusinessUserRole,
+      userId: user.id,
+      businessAccountId: user.businessAccountId,
+      role: user.role,
     };
 
     next();
-  } catch {
+  } catch (error) {
+    console.error("Authentication middleware error:", error);
+
     res.status(401).json({
       success: false,
       message: "Invalid or expired authentication token.",

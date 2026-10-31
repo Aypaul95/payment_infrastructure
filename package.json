@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test:unit": "tsx --test tests/payment.service.test.mts",
+    "test:integration": "node scripts/run-integration-tests.mjs"
   },
   "keywords": [],
   "author": "",

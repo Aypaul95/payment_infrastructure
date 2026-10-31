@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { prisma } from "../lib/prisma";
+import { confirmPayment } from "../services/payment-confirmation.service";
 
 export const paystackWebhookRouter = Router();
 
@@ -89,94 +90,86 @@ paystackWebhookRouter.post(
       });
     }
 
-    try {
-      const payment = await prisma.payment.findUnique({
-        where: { reference: data.reference },
-        select: {
-          id: true,
-          amount: true,
-          currency: true,
-          status: true,
-        },
-      });
+        try {
+            // 1. Find the payment associated with the webhook reference.
+            const payment = await prisma.payment.findUnique({
+                where: { reference: data.reference },
+                select: {
+                    id: true,
+                    amount: true,
+                    currency: true,
+                },
+            });
 
-      if (!payment) {
-        // Acknowledge unknown references without changing any payment.
-        return res.status(200).json({
-          success: true,
-          message: "Event acknowledged.",
-        });
-      }
+            if (!payment) {
+                return res.status(200).json({
+                    success: true,
+                    message: "Event acknowledged.",
+                });
+            }
 
-      if (
-        payment.amount !== BigInt(data.amount) ||
-        payment.currency !== data.currency
-      ) {
-        console.error(
-          "Paystack webhook payment details did not match:",
-          data.reference,
-        );
+            // 2. Compare the signed webhook details with our database.
+            if (
+                payment.amount !== BigInt(data.amount) ||
+                payment.currency !== data.currency
+            ) {
+                console.error(
+                    "Paystack webhook payment details did not match:",
+                    data.reference,
+                );
 
-        return res.status(200).json({
-          success: true,
-          message: "Event acknowledged for review.",
-        });
-      }
+                return res.status(200).json({
+                    success: true,
+                    message: "Event acknowledged for review.",
+                });
+            }
 
-      if (payment.status === "SUCCESSFUL") {
-        return res.status(200).json({
-          success: true,
-          message: "Payment already confirmed.",
-        });
-      }
+            // 3. Independently verify the transaction with Paystack.
+            const result = await confirmPayment(data.reference);
 
-      if (payment.status !== "PENDING") {
-        return res.status(200).json({
-          success: true,
-          message: "Payment status was not changed.",
-        });
-      }
+            switch (result.outcome) {
+                case "SUCCESSFUL":
+                    return res.status(200).json({
+                        success: true,
+                        message: "Payment confirmed.",
+                    });
 
-     const updated = await prisma.payment.updateMany({
-  where: {
-    id: payment.id,
-    status: "PENDING",
-  },
-  data: {
-    status: "SUCCESSFUL",
-  },
-});
+                case "PENDING":
+                    return res.status(200).json({
+                        success: true,
+                        message: "Payment remains pending.",
+                    });
 
-if (updated.count === 1) {
-  return res.status(200).json({
-    success: true,
-    message: "Payment confirmed.",
-  });
-}
+                case "NOT_FOUND":
+                    return res.status(200).json({
+                        success: true,
+                        message: "Event acknowledged.",
+                    });
 
-        const latestPayment = await prisma.payment.findUnique({
-            where: { id: payment.id },
-            select: { status: true },
-        });
+                case "DETAILS_MISMATCH":
+                    console.error(
+                        "Paystack verification details did not match:",
+                        data.reference,
+                    );
 
-        if (latestPayment?.status === "SUCCESSFUL") {
-            return res.status(200).json({
-                success: true,
-                message: "Payment already confirmed.",
+                    return res.status(200).json({
+                        success: true,
+                        message: "Event acknowledged for review.",
+                    });
+
+                case "NOT_PENDING":
+                    return res.status(200).json({
+                        success: true,
+                        message: "Payment status was not changed.",
+                    });
+            }
+        } catch (error) {
+            console.error("Paystack webhook processing failed:", error);
+
+            return res.status(500).json({
+                success: false,
+                message: "Unable to process webhook.",
             });
         }
-
-        return res.status(200).json({
-            success: true,
-            message: "Payment status was not changed.",
-        });
-    } catch (error) {
-      console.error("Paystack webhook processing failed:", error);
-
-      return res.status(500).json({
-        success: false,
-        message: "Unable to process webhook.",
-      });
-    }
-  },
+    },
 );

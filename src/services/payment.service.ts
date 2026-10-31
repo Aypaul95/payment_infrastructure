@@ -1,6 +1,7 @@
 
 import { prisma } from "../lib/prisma";
 import type { CreatePaymentInput } from "../validators/payment.validator";
+import { isSamePaymentRequest } from "./payment-idempotency";
 
 
 export async function createPayment(
@@ -32,20 +33,20 @@ export async function createPayment(
     },
   });
 
-  if (existingPayment) {
-    const sameRequest =
-      existingPayment.customerId === (input.customerId ?? null) &&
-      existingPayment.amount === amount &&
-      existingPayment.currency === input.currency &&
-      existingPayment.description === (input.description ?? null);
+    if (existingPayment) {
+        const sameRequest = isSamePaymentRequest(existingPayment, {
+            customerId: input.customerId,
+            amount,
+            currency: input.currency,
+            description: input.description,
+        });
 
-    if (!sameRequest) {
-      throw new Error("IDEMPOTENCY_KEY_REUSED");
+        if (!sameRequest) {
+            throw new Error("IDEMPOTENCY_KEY_REUSED");
+        }
+
+        return existingPayment;
     }
-
-    return existingPayment;
-  }
-
   // If a customer was supplied, verify that the customer
   // belongs to the authenticated business.
   if (input.customerId) {
@@ -119,19 +120,20 @@ export async function createPayment(
       },
     });
 
-    if (existingPayment) {
-      const sameRequest =
-        existingPayment.customerId === (input.customerId ?? null) &&
-        existingPayment.amount === amount &&
-        existingPayment.currency === input.currency &&
-        existingPayment.description === (input.description ?? null);
+      if (existingPayment) {
+          const sameRequest = isSamePaymentRequest(existingPayment, {
+              customerId: input.customerId,
+              amount,
+              currency: input.currency,
+              description: input.description,
+          });
 
-      if (!sameRequest) {
-        throw new Error("IDEMPOTENCY_KEY_REUSED");
+          if (!sameRequest) {
+              throw new Error("IDEMPOTENCY_KEY_REUSED");
+          }
+
+          return existingPayment;
       }
-
-      return existingPayment;
-    }
   }
 
   throw error;

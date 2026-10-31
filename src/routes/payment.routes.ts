@@ -4,7 +4,6 @@ import { authenticate } from "../middleware/auth.middleware";
 import { prisma } from "../lib/prisma";
 import {
     initializePaystackTransaction,
-    verifyPaystackTransaction,
 } from "../services/paystack.service";
 import {
   createPayment,
@@ -12,6 +11,7 @@ import {
   getPaymentById,
 } from "../services/payment.service";
 import { createPaymentSchema , initializePaystackSchema,} from "../validators/payment.validator";
+import { confirmPayment } from "../services/payment-confirmation.service";
 
 export const paymentRouter = Router();
 
@@ -239,129 +239,83 @@ paymentRouter.post("/:id/initialize", async (req, res) => {
 
 });
 
-
 paymentRouter.post("/:id/verify", async (req, res) => {
-  const businessAccountId = req.auth!.businessAccountId;
-  const paymentId = req.params.id;
+    const businessAccountId = req.auth!.businessAccountId;
+    const paymentId = req.params.id;
 
-  try {
-    const payment = await prisma.payment.findFirst({
-      where: {
-        id: paymentId,
-        businessAccountId,
-      },
-      select: {
-        id: true,
-        businessAccountId: true,
-        reference: true,
-        amount: true,
-        currency: true,
-        status: true,
-      },
-    });
+    try {
+        // Retrieve the payment within the authenticated business.
+        const payment = await prisma.payment.findFirst({
+            where: {
+                id: paymentId,
+                businessAccountId,
+            },
+            select: {
+                reference: true,
+            },
+        });
 
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: "Payment not found.",
-      });
-    }
+        if (!payment) {
+            return res.status(404).json({
+                success: false,
+                message: "Payment not found.",
+            });
+        }
 
-      if (payment.status === "SUCCESSFUL") {
-          return res.status(200).json({
-              success: true,
-              message: "Payment has already been confirmed.",
-              data: {
-                  paymentId: payment.id,
-                  reference: payment.reference,
-                  status: "SUCCESSFUL",
-              },
-          });
-      }
+        // Delegate confirmation to the shared service.
+        const result = await confirmPayment(
+            payment.reference,
+            businessAccountId,
+        );
 
-      if (payment.status !== "PENDING") {
-          return res.status(409).json({
-              success: false,
-              message: "This payment is no longer pending.",
-          });
-      }
+        switch (result.outcome) {
+            case "SUCCESSFUL":
+                return res.status(200).json({
+                    success: true,
+                    message: "Payment verified successfully.",
+                    data: {
+                        paymentId: result.paymentId,
+                        reference: result.reference,
+                        status: "SUCCESSFUL",
+                    },
+                });
 
-    const result = await verifyPaystackTransaction(payment.reference);
+            case "PENDING":
+                return res.status(200).json({
+                    success: true,
+                    message: "Payment has not been confirmed as successful.",
+                    data: {
+                        paymentId: result.paymentId,
+                        reference: result.reference,
+                        status: "PENDING",
+                        providerStatus: result.providerStatus,
+                    },
+                });
 
-    if (
-      result.reference !== payment.reference ||
-      result.amount !== Number(payment.amount) ||
-      result.currency !== payment.currency
-    ) {
-      return res.status(409).json({
-        success: false,
-        message: "Paystack transaction details do not match this payment.",
-      });
-    }
+            case "NOT_FOUND":
+                return res.status(404).json({
+                    success: false,
+                    message: "Payment not found.",
+                });
 
-    if (result.status !== "success") {
-      return res.status(200).json({
-        success: true,
-        message: "Payment has not been confirmed as successful.",
-        data: {
-          paymentId: payment.id,
-          reference: payment.reference,
-          status: "PENDING",
-          providerStatus: result.status,
-        },
-      });
-    }
+            case "DETAILS_MISMATCH":
+                return res.status(409).json({
+                    success: false,
+                    message: "Paystack transaction details do not match this payment.",
+                });
 
-    const updated = await prisma.payment.updateMany({
-      where: {
-        id: payment.id,
-        businessAccountId,
-        status: "PENDING",
-      },
-      data: {
-        status: "SUCCESSFUL",
-      },
-    });
-
-      if (updated.count !== 1) {
-          const latestPayment = await prisma.payment.findFirst({
-              where: {
-                  id: payment.id,
-                  businessAccountId,
-              },
-              select: {
-                  status: true,
-              },
-          });
-
-          if (latestPayment?.status === "SUCCESSFUL") {
-              return res.status(200).json({
-                  success: true,
-                  message: "Payment verified successfully.",
-                  data: {
-                      paymentId: payment.id,
-                      reference: payment.reference,
-                      status: "SUCCESSFUL",
-                  },
-              });
-          }
-
-          return res.status(409).json({
-              success: false,
-              message: "Payment status changed concurrently. Retrieve the payment and try again.",
-          });
-      }
-      return res.status(200).json({
-          success: true,
-          message: "Payment verified successfully.",
-          data: {
-              paymentId: payment.id,
-              reference: payment.reference,
-              status: "SUCCESSFUL",
-          },
-      });
-  }
-    catch (error) {
+            case "NOT_PENDING":
+                return res.status(409).json({
+                    success: false,
+                    message: "This payment is no longer pending.",
+                    data: {
+                        paymentId: result.paymentId,
+                        reference: result.reference,
+                        status: result.currentStatus,
+                    },
+                });
+        }
+    } catch (error) {
         if (
             error instanceof Error &&
             error.message === "PAYSTACK_SECRET_KEY_NOT_CONFIGURED"
@@ -391,14 +345,13 @@ paymentRouter.post("/:id/verify", async (req, res) => {
             });
         }
 
-        console.error("Paystack verification failed:", error);
+        console.error("Payment verification failed:", error);
 
         return res.status(500).json({
             success: false,
             message: "Unable to verify payment.",
         });
     }
-
 });
 
 
