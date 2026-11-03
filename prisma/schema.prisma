@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -21,19 +20,29 @@ enum PaymentStatus {
   FAILED
 }
 
-model BusinessAccount {
-  id            String         @id @default(cuid())
-  businessName  String
-  email         String         @unique
-  phone         String?
-  currency      String         @default("NGN")
-  isActive      Boolean        @default(true)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+// 1. Record the result of each reconciliation attempt.
+enum ReconciliationOutcome {
+  SUCCESSFUL
+  STILL_PENDING
+  DETAILS_MISMATCH
+  PROVIDER_ERROR
+  NOT_FOUND
+  NOT_PENDING
+}
 
-  users         BusinessUser[]
-  customers     Customer[]
-  payments      Payment[]
+model BusinessAccount {
+  id           String   @id @default(cuid())
+  businessName String
+  email        String   @unique
+  phone        String?
+  currency     String   @default("NGN")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users     BusinessUser[]
+  customers Customer[]
+  payments  Payment[]
 }
 
 model BusinessUser {
@@ -47,34 +56,34 @@ model BusinessUser {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
-  businessAccount   BusinessAccount  @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
 
   @@index([businessAccountId])
 }
 
 model Customer {
-  id                String          @id @default(cuid())
+  id                String    @id @default(cuid())
   businessAccountId String
   name              String
   email             String?
   phone             String?
   reference         String?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
-  payments      Payment[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  payments          Payment[]
 
-  businessAccount   BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
 
-  @@index([businessAccountId])
   @@unique([businessAccountId, reference])
+  @@index([businessAccountId])
 }
 
-
+// 2. Store payment information and its reconciliation schedule.
 model Payment {
   id                String        @id @default(cuid())
   businessAccountId String
   customerId        String?
-  idempotencyKey   String
+  idempotencyKey    String
   reference         String        @unique
   amount            BigInt
   currency          String        @default("NGN")
@@ -83,11 +92,52 @@ model Payment {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  businessAccount   BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
-  customer          Customer?       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  // 2.1. Track how many reconciliation checks have been attempted.
+  reconciliationAttempts Int @default(0)
+
+  // 2.2. Store when the next reconciliation check is due.
+  nextReconciliationAt DateTime?
+
+  // 2.3. Temporary lease expiry for a worker processing this payment.
+  reconciliationLockedUntil DateTime?
+
+  // 2.4. Store a unique claim token to identify the worker's lease.
+  reconciliationLockToken String?
+
+  // 2.5. Link the payment to its reconciliation history.
+  reconciliationHistory PaymentReconciliationAttempt[]
+
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  customer        Customer?       @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
   @@unique([businessAccountId, idempotencyKey])
   @@index([businessAccountId])
   @@index([customerId])
   @@index([businessAccountId, status])
+  // 2.6. Find pending payments that are ready for reconciliation.
+  @@index([status, nextReconciliationAt])
+}
+
+// 3. Keep an audit record for every reconciliation attempt.
+model PaymentReconciliationAttempt {
+  id        String @id @default(cuid())
+  paymentId String
+
+  // 3.1. Record when the attempt started.
+  attemptedAt DateTime @default(now())
+
+  // 3.2. Store the reconciliation outcome.
+  outcome ReconciliationOutcome
+
+  // 3.3. Store the status reported by Paystack, when available.
+  providerStatus String?
+
+  // 3.4. Store a safe error code if the verification request failed.
+  errorCode String?
+
+  // 3.5. Link this attempt to the payment.
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([paymentId, attemptedAt])
+  @@index([outcome])
 }

@@ -80,6 +80,8 @@ try {
       "--test",
       "tests/payment.integration.test.mts",
       "tests/auth.integration.test.mts",
+      "tests/payment-reconciliation.integration.test.mts",
+      "tests/paystack-webhook.integration.test.mts",
     ],
     {
       stdio: "inherit",

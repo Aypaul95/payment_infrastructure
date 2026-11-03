@@ -67,16 +67,19 @@ export async function createPayment(
 
  try {
   return await prisma.payment.create({
-    data: {
-      businessAccountId,
-      idempotencyKey: input.idempotencyKey,
-      customerId: input.customerId,
-      reference: `PAY-${crypto.randomUUID()}`,
-      amount,
-      currency: input.currency,
-      description: input.description,
-      status: "PENDING",
-    },
+      data: {
+          businessAccountId,
+          idempotencyKey: input.idempotencyKey,
+          customerId: input.customerId,
+          reference: `PAY-${crypto.randomUUID()}`,
+          amount,
+          currency: input.currency,
+          description: input.description,
+          status: "PENDING",
+
+          // Schedule the first reconciliation five minutes from creation.
+          nextReconciliationAt: new Date(Date.now() + 5 * 60 * 1000),
+      },
     select: {
       id: true,
       businessAccountId: true,

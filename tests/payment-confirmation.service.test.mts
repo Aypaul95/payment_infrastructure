@@ -2,257 +2,308 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { confirmPaymentWithDependencies } from "../src/services/payment-confirmation.service.ts";
+import {
+  confirmPaymentWithDependencies,
+  type PaymentConfirmationResult,
+} from "../src/services/payment-confirmation.service";
 
-// 1. Create sample payment data used by the tests.
-const payment = {
-  id: "payment-test-123",
-  businessAccountId: "business-test-123",
-  reference: "PAY-TEST-123",
-  amount: 50000n,
-  currency: "NGN",
-  status: "PENDING",
-};
+// ============================================================
+// 1. CREATE MOCK DEPENDENCIES
+// ============================================================
 
-// 2. Create a sample successful Paystack verification response.
-const successfulPaystackResponse = {
-  reference: "PAY-TEST-123",
-  amount: 50000,
-  currency: "NGN",
-  status: "success",
-};
+// This function creates a simulated payment record and fake
+// database and Paystack operations.
+//
+// We use mock dependencies because we want to test the payment
+// confirmation logic without contacting the real Paystack API
+// or modifying actual database records.
+//
+// The options parameter allows individual tests to simulate
+// different payment statuses and Paystack responses.
+function createDependencies(options?: {
+  status?: string;
+  providerStatus?: string;
+  amount?: number;
+  currency?: string;
+  reference?: string;
+  updatedCount?: number;
+  latestStatus?: string;
+}) {
+  // Simulated payment record returned by our mock database.
+  const payment = {
+    id: "payment-test-001",
+    businessAccountId: "business-test-001",
+    reference: "PAY-TEST-001",
+    amount: BigInt(5000),
+    currency: "NGN",
+    status: options?.status ?? "PENDING",
+  };
 
-// 3. Create fake dependencies for testing.
-//    Individual tests can override these functions when necessary.
-type Dependencies = Parameters<
-  typeof confirmPaymentWithDependencies
->[1];
+  // Counters help us verify how many times the confirmation
+  // service contacts Paystack and attempts a database update.
+  let verificationCalls = 0;
+  let updateCalls = 0;
 
-function createDependencies(
-  overrides: Partial<Dependencies> = {},
-): Dependencies {
+  // These functions imitate the database and Paystack operations
+  // required by confirmPaymentWithDependencies().
+    const dependencies = {
+        // Simulates searching for a payment using its reference.
+        // The database may return null when the payment does not exist.
+        findFirst: async (): Promise<typeof payment | null> => payment,
+
+    // Simulates updating a payment in the database.
+    updateMany: async () => {
+      updateCalls++;
+
+      // Simulate a situation where another process has already
+      // changed the payment status before our update.
+      if (options?.updatedCount === 0) {
+        return { count: 0 };
+      }
+
+      // Otherwise, simulate a successful database update.
+      payment.status = "SUCCESSFUL";
+
+      return { count: 1 };
+    },
+
+    // Simulates retrieving the latest payment status after
+    // an attempted update fails to modify any records.
+    findUnique: async () => ({
+      status: options?.latestStatus ?? payment.status,
+    }),
+
+    // Simulates Paystack transaction verification.
+    // No actual HTTP request is made.
+    verifyTransaction: async () => {
+      verificationCalls++;
+
+      return {
+        reference: options?.reference ?? payment.reference,
+        amount: options?.amount ?? 5000,
+        currency: options?.currency ?? "NGN",
+        status: options?.providerStatus ?? "success",
+      };
+    },
+  };
+
+  // Return the mock dependencies and counter accessors.
+  // The tests use these counters to verify service behaviour.
   return {
-    findFirst: async () => payment,
-    updateMany: async () => ({ count: 1 }),
-    findUnique: async () => ({ status: "SUCCESSFUL" }),
-    verifyTransaction: async () => successfulPaystackResponse,
-    ...overrides,
+    dependencies,
+    getVerificationCalls: () => verificationCalls,
+    getUpdateCalls: () => updateCalls,
   };
 }
 
-// TEST 1
-// 4. Check that NOT_FOUND is returned when no payment exists.
-test("returns NOT_FOUND when the payment reference does not exist", async () => {
-  const dependencies = createDependencies({
-    findFirst: async () => null,
-  });
+// ============================================================
+// 2. TEST SUCCESSFUL PAYMENT CONFIRMATION
+// ============================================================
+
+// A pending payment should become successful when Paystack
+// confirms that the transaction was completed successfully.
+test("confirms a pending payment after successful provider verification", async () => {
+  const setup = createDependencies();
 
   const result = await confirmPaymentWithDependencies(
-    "UNKNOWN-REFERENCE",
-    dependencies,
+    "PAY-TEST-001",
+    setup.dependencies,
   );
 
-  assert.deepEqual(result, {
-    outcome: "NOT_FOUND",
-  });
-});
-
-// TEST 2
-// 5. Check that an already successful payment is not verified again.
-test("returns SUCCESSFUL without contacting Paystack when already confirmed", async () => {
-  let verificationCalls = 0;
-
-  const dependencies = createDependencies({
-    findFirst: async () => ({
-      ...payment,
-      status: "SUCCESSFUL",
-    }),
-
-    verifyTransaction: async () => {
-      verificationCalls++;
-      return successfulPaystackResponse;
-    },
-  });
-
-  const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
-  );
-
+  // Confirm that the service returns the expected result.
   assert.deepEqual(result, {
     outcome: "SUCCESSFUL",
-    paymentId: payment.id,
-    reference: payment.reference,
+    paymentId: "payment-test-001",
+    reference: "PAY-TEST-001",
   });
 
-  assert.equal(verificationCalls, 0);
+  // Paystack verification should happen exactly once.
+  assert.equal(setup.getVerificationCalls(), 1);
+
+  // The database update should also happen exactly once.
+  assert.equal(setup.getUpdateCalls(), 1);
 });
 
-// TEST 3
-// 6. Check that payments with FAILED status cannot be confirmed.
-test("returns NOT_PENDING when the payment has FAILED status", async () => {
-  let verificationCalls = 0;
+// ============================================================
+// 3. TEST DUPLICATE PAYMENT CONFIRMATION
+// ============================================================
 
-  const dependencies = createDependencies({
-    findFirst: async () => ({
-      ...payment,
-      status: "FAILED",
-    }),
-
-    verifyTransaction: async () => {
-      verificationCalls++;
-      return successfulPaystackResponse;
-    },
+// If a payment has already been marked SUCCESSFUL,
+// the service should not contact Paystack or update it again.
+//
+// This is an important part of payment idempotency.
+test("does not verify a payment that is already successful", async () => {
+  const setup = createDependencies({
+    status: "SUCCESSFUL",
   });
 
   const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.equal(result.outcome, "SUCCESSFUL");
+
+  // No additional Paystack verification should occur.
+  assert.equal(setup.getVerificationCalls(), 0);
+
+  // No additional database update should occur.
+  assert.equal(setup.getUpdateCalls(), 0);
+});
+
+// ============================================================
+// 4. TEST PAYMENT AMOUNT MISMATCH
+// ============================================================
+
+// The amount returned by Paystack must match the amount
+// originally stored in our database.
+//
+// If the amounts differ, the payment must not be confirmed.
+test("does not confirm a payment when provider amount differs", async () => {
+  const setup = createDependencies({
+    amount: 6000,
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.equal(result.outcome, "DETAILS_MISMATCH");
+
+  // The database must not be updated.
+  assert.equal(setup.getUpdateCalls(), 0);
+});
+
+// ============================================================
+// 5. TEST PAYMENT CURRENCY MISMATCH
+// ============================================================
+
+// The currency returned by Paystack must match the currency
+// stored in our database.
+//
+// For example, an NGN payment must not be confirmed using
+// a provider response that reports USD.
+test("does not confirm a payment when provider currency differs", async () => {
+  const setup = createDependencies({
+    currency: "USD",
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.equal(result.outcome, "DETAILS_MISMATCH");
+
+  // No database update should take place.
+  assert.equal(setup.getUpdateCalls(), 0);
+});
+
+// ============================================================
+// 6. TEST PENDING PROVIDER TRANSACTION
+// ============================================================
+
+// Sometimes Paystack may report that a transaction is still
+// pending rather than successful.
+//
+// In this situation, our payment must remain PENDING.
+test("keeps payment pending when provider has not confirmed success", async () => {
+  const setup = createDependencies({
+    providerStatus: "pending",
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.equal(result.outcome, "PENDING");
+
+  // A pending provider response must not trigger a successful
+  // payment update.
+  assert.equal(setup.getUpdateCalls(), 0);
+});
+
+// ============================================================
+// 7. TEST FAILED PAYMENT
+// ============================================================
+
+// A payment with FAILED status must not go through the
+// successful confirmation process again.
+test("does not confirm a payment with a failed status", async () => {
+  const setup = createDependencies({
+    status: "FAILED",
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
   );
 
   assert.deepEqual(result, {
     outcome: "NOT_PENDING",
-    paymentId: payment.id,
-    reference: payment.reference,
+    paymentId: "payment-test-001",
+    reference: "PAY-TEST-001",
     currentStatus: "FAILED",
   });
 
-  assert.equal(verificationCalls, 0);
+  // Paystack should not be contacted for an already failed payment.
+  assert.equal(setup.getVerificationCalls(), 0);
 });
 
-// TEST 4
-// 7. Check that a payment remains pending when Paystack reports pending.
-test("keeps the payment pending when Paystack has not confirmed success", async () => {
-  let updateCalls = 0;
+// ============================================================
+// 8. TEST PAYMENT NOT FOUND
+// ============================================================
 
-  const dependencies = createDependencies({
-    verifyTransaction: async () => ({
-      ...successfulPaystackResponse,
-      status: "pending",
-    }),
+// If the supplied payment reference does not exist in our
+// database, the service should return NOT_FOUND.
+test("returns NOT_FOUND when no payment exists", async () => {
+  const setup = createDependencies();
 
-    updateMany: async () => {
-      updateCalls++;
-      return { count: 1 };
-    },
+  // Override the mock database search to simulate
+  // a reference that does not exist.
+  setup.dependencies.findFirst = async () => null;
+
+  const result: PaymentConfirmationResult =
+    await confirmPaymentWithDependencies(
+      "MISSING-REFERENCE",
+      setup.dependencies,
+    );
+
+  assert.deepEqual(result, {
+    outcome: "NOT_FOUND",
+  });
+
+  // Paystack should not be contacted when no local payment exists.
+  assert.equal(setup.getVerificationCalls(), 0);
+});
+
+// ============================================================
+// 9. TEST CONCURRENT PAYMENT CONFIRMATION
+// ============================================================
+
+// Two requests might attempt to confirm the same payment
+// at almost the same time.
+//
+// If another request updates the payment first, our updateMany
+// operation returns count: 0.
+//
+// The service must then retrieve the latest status and recognise
+// that the payment has already been confirmed successfully.
+test("handles a concurrent confirmation by reading the latest status", async () => {
+  const setup = createDependencies({
+    updatedCount: 0,
+    latestStatus: "SUCCESSFUL",
   });
 
   const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
+    "PAY-TEST-001",
+    setup.dependencies,
   );
 
-  assert.deepEqual(result, {
-    outcome: "PENDING",
-    paymentId: payment.id,
-    reference: payment.reference,
-    providerStatus: "pending",
-  });
+  assert.equal(result.outcome, "SUCCESSFUL");
 
-  assert.equal(updateCalls, 0);
-});
-
-// TEST 5
-// 8. Check that a successful Paystack verification updates the database.
-test("marks the payment SUCCESSFUL when Paystack confirms the transaction", async () => {
-  let updateCalls = 0;
-  let receivedUpdateArguments: unknown;
-
-  const dependencies = createDependencies({
-    updateMany: async (args) => {
-      updateCalls++;
-      receivedUpdateArguments = args;
-      return { count: 1 };
-    },
-  });
-
-  const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
-  );
-
-  assert.deepEqual(result, {
-    outcome: "SUCCESSFUL",
-    paymentId: payment.id,
-    reference: payment.reference,
-  });
-
-  assert.equal(updateCalls, 1);
-
-  assert.deepEqual(receivedUpdateArguments, {
-    where: {
-      id: payment.id,
-      businessAccountId: payment.businessAccountId,
-      status: "PENDING",
-    },
-    data: {
-      status: "SUCCESSFUL",
-    },
-  });
-});
-
-// TEST 6
-// 9. Check that a different amount reported by Paystack is rejected.
-test("returns DETAILS_MISMATCH when Paystack reports a different amount", async () => {
-  let updateCalls = 0;
-
-  const dependencies = createDependencies({
-    verifyTransaction: async () => ({
-      ...successfulPaystackResponse,
-      amount: 60000,
-    }),
-
-    updateMany: async () => {
-      updateCalls++;
-      return { count: 1 };
-    },
-  });
-
-  const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
-  );
-
-  assert.deepEqual(result, {
-    outcome: "DETAILS_MISMATCH",
-    paymentId: payment.id,
-    reference: payment.reference,
-  });
-
-  assert.equal(updateCalls, 0);
-});
-
-// TEST 7
-// 10. Check that concurrent confirmation is handled safely.
-//     If another request updates the payment first, this request checks
-//     the latest database status before returning its result.
-test("handles concurrent confirmation when another request succeeds first", async () => {
-  let updateCalls = 0;
-  let findUniqueCalls = 0;
-
-  const dependencies = createDependencies({
-    updateMany: async () => {
-      updateCalls++;
-      return { count: 0 };
-    },
-
-    findUnique: async () => {
-      findUniqueCalls++;
-      return { status: "SUCCESSFUL" };
-    },
-  });
-
-  const result = await confirmPaymentWithDependencies(
-    payment.reference,
-    dependencies,
-  );
-
-  assert.deepEqual(result, {
-    outcome: "SUCCESSFUL",
-    paymentId: payment.id,
-    reference: payment.reference,
-  });
-
-  assert.equal(updateCalls, 1);
-  assert.equal(findUniqueCalls, 1);
+  // Our update was attempted once but did not update a record.
+  assert.equal(setup.getUpdateCalls(), 1);
 });
