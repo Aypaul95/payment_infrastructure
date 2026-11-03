@@ -1,17 +1,28 @@
+
 {
   "name": "payment_infrastructure",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Payment collection infrastructure API built with Node.js, TypeScript, PostgreSQL, Prisma, and Paystack.",
+  "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test:unit": "tsx --test tests/payment.service.test.mts",
+    "worker:reconciliation": "tsx src/workers/payment-reconciliation.worker-entry.ts",
+    "test:unit": "tsx --test tests/payment.service.test.mts tests/payment-confirmation.service.test.mts tests/payment-reconciliation.service.test.mts tests/payment-reconciliation.worker.test.mts",
     "test:integration": "node scripts/run-integration-tests.mjs"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "payment-infrastructure",
+    "nodejs",
+    "typescript",
+    "postgresql",
+    "prisma",
+    "paystack",
+    "payment-api",
+    "payment-reconciliation"
+  ],
+  "author": "Aypaul95",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
