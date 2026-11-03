@@ -1,5 +1,7 @@
 
 import express from "express";
+import swaggerUi from "swagger-ui-express";
+import { openapiSpec } from "./docs/openapi";
 import { prisma } from "./lib/prisma";
 import { authRouter } from "./routes/auth.routes";
 import { authenticate } from "./middleware/auth.middleware";
@@ -17,6 +19,12 @@ app.use(
 );
 
 app.use(express.json());
+
+app.use(
+  "/docs",
+  swaggerUi.serve,
+  swaggerUi.setup(openapiSpec),
+);
 
 app.use("/auth", authRouter);
 app.use("/customers", customerRouter);
