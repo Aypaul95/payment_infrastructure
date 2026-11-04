@@ -20,6 +20,7 @@ app.use(
 
 app.use(express.json());
 
+// Interactive API documentation: http://127.0.0.1:3000/docs/
 app.use(
   "/docs",
   swaggerUi.serve,

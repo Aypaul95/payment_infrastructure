@@ -241,8 +241,11 @@ The API runs locally at:
 ```text
 http://127.0.0.1:3000
 ```
+### 7. Swagger interactive API documentation is at
 
-### 7. Check the health endpoint
+http://127.0.0.1:3000/docs/
+
+### 8. Check the health endpoint
 
 ```bash
 curl -i http://127.0.0.1:3000/health
