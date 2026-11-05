@@ -43,6 +43,7 @@ model BusinessAccount {
   users     BusinessUser[]
   customers Customer[]
   payments  Payment[]
+  products  Product[]
 }
 
 model BusinessUser {
@@ -140,4 +141,33 @@ model PaymentReconciliationAttempt {
 
   @@index([paymentId, attemptedAt])
   @@index([outcome])
+}
+
+model Product {
+  id                String   @id @default(cuid())
+  businessAccountId String
+  name              String
+  description       String?
+  sku               String
+  price             BigInt
+  currency          String   @default("NGN")
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  inventory       Inventory?
+
+  @@unique([businessAccountId, sku])
+  @@index([businessAccountId])
+  @@index([businessAccountId, isActive])
+}
+
+model Inventory {
+  id        String   @id @default(cuid())
+  productId String   @unique
+  quantity  Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
 }
