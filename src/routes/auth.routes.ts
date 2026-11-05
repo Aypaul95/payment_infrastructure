@@ -9,11 +9,12 @@ import {
   loginSchema,
 } from "../validators/auth.validator";
 import { authenticate } from "../middleware/auth.middleware";
+import { authRateLimiter } from "../middleware/auth-rate-limit.middleware";
 import { prisma } from "../lib/prisma";
 
 export const authRouter = Router();
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", authRateLimiter, async (req, res) => {
   const validation = registerSchema.safeParse(req.body);
 
   if (!validation.success) {
@@ -55,7 +56,7 @@ authRouter.post("/register", async (req, res) => {
   }
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", authRateLimiter, async (req, res) => {
   const validation = loginSchema.safeParse(req.body);
 
   if (!validation.success) {

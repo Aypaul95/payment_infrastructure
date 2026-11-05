@@ -1,6 +1,7 @@
 
 import express from "express";
 import swaggerUi from "swagger-ui-express";
+import helmet from "helmet";
 import { openapiSpec } from "./docs/openapi";
 import { prisma } from "./lib/prisma";
 import { authRouter } from "./routes/auth.routes";
@@ -10,6 +11,9 @@ import { paymentRouter } from "./routes/payment.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
 
 const app = express();
+
+app.disable("x-powered-by");
+app.use(helmet());
 
 // Paystack webhook must receive the raw request body for signature verification.
 app.use(

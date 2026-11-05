@@ -64,6 +64,79 @@ function createToken(userId: string, accountId: string): string {
   );
 }
 
+function createExpiredToken(userId: string, accountId: string): string {
+    return jwt.sign(
+        {
+            businessAccountId: accountId,
+            role: "OWNER",
+        },
+        JWT_SECRET!,
+        {
+            subject: userId,
+            expiresIn: -1,
+            issuer: "payment-infrastructure-api",
+            audience: "payment-infrastructure-client",
+        },
+    );
+}
+
+function createInvalidSignatureToken(
+    userId: string,
+    accountId: string,
+): string {
+    return jwt.sign(
+        {
+            businessAccountId: accountId,
+            role: "OWNER",
+        },
+        "this-is-a-different-secret-that-is-long-enough",
+        {
+            subject: userId,
+            expiresIn: "15m",
+            issuer: "payment-infrastructure-api",
+            audience: "payment-infrastructure-client",
+        },
+    );
+}
+
+function createWrongIssuerToken(
+    userId: string,
+    accountId: string,
+): string {
+    return jwt.sign(
+        {
+            businessAccountId: accountId,
+            role: "OWNER",
+        },
+        JWT_SECRET!,
+        {
+            subject: userId,
+            expiresIn: "15m",
+            issuer: "wrong-issuer",
+            audience: "payment-infrastructure-client",
+        },
+    );
+}
+
+function createWrongAudienceToken(
+    userId: string,
+    accountId: string,
+): string {
+    return jwt.sign(
+        {
+            businessAccountId: accountId,
+            role: "OWNER",
+        },
+        JWT_SECRET!,
+        {
+            subject: userId,
+            expiresIn: "15m",
+            issuer: "payment-infrastructure-api",
+            audience: "wrong-audience",
+        },
+    );
+}
+
 async function requestProtectedRoute(token: string) {
   return fetch(`${baseUrl}/protected`, {
     headers: {
@@ -175,6 +248,83 @@ test("allows an active user belonging to an active business", async () => {
   assert.equal(body.auth.userId, businessUserId);
   assert.equal(body.auth.businessAccountId, businessAccountId);
   assert.equal(body.auth.role, "OWNER");
+});
+
+test("rejects an expired authentication token", async () => {
+  const token = createExpiredToken(businessUserId, businessAccountId);
+
+  const response = await requestProtectedRoute(token);
+  const body = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Invalid or expired authentication token.",
+  );
+});
+
+test("rejects a token with an invalid signature", async () => {
+  const token = createInvalidSignatureToken(
+    businessUserId,
+    businessAccountId,
+  );
+
+  const response = await requestProtectedRoute(token);
+  const body = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Invalid or expired authentication token.",
+  );
+});
+
+test("rejects a token with the wrong issuer", async () => {
+  const token = createWrongIssuerToken(
+    businessUserId,
+    businessAccountId,
+  );
+
+  const response = await requestProtectedRoute(token);
+  const body = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Invalid or expired authentication token.",
+  );
+});
+
+test("rejects a token with the wrong audience", async () => {
+  const token = createWrongAudienceToken(
+    businessUserId,
+    businessAccountId,
+  );
+
+  const response = await requestProtectedRoute(token);
+  const body = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Invalid or expired authentication token.",
+  );
+});
+
+test("rejects a malformed authentication token", async () => {
+  const response = await requestProtectedRoute("not-a-valid-jwt");
+  const body = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Invalid or expired authentication token.",
+  );
 });
 
 test("rejects a deactivated user", async () => {
