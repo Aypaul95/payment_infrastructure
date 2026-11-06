@@ -9,6 +9,7 @@ import { authenticate } from "./middleware/auth.middleware";
 import { customerRouter } from "./routes/customer.routes";
 import { paymentRouter } from "./routes/payment.routes";
 import { productRouter } from "./routes/product.routes";
+import { inventoryRouter } from "./routes/inventory.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
 
 const app = express();
@@ -35,6 +36,7 @@ app.use(
 app.use("/auth", authRouter);
 app.use("/customers", customerRouter);
 app.use("/products", productRouter);
+app.use("/inventory", inventoryRouter);
 app.use("/payments", paymentRouter);
 
 // Public health check

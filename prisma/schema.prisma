@@ -30,6 +30,12 @@ enum ReconciliationOutcome {
   NOT_PENDING
 }
 
+enum InventoryMovementType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
+}
+
 model BusinessAccount {
   id           String   @id @default(cuid())
   businessName String
@@ -155,8 +161,9 @@ model Product {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
-  inventory       Inventory?
+  businessAccount    BusinessAccount     @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  inventory          Inventory?
+  inventoryMovements InventoryMovement[]
 
   @@unique([businessAccountId, sku])
   @@index([businessAccountId])
@@ -170,4 +177,18 @@ model Inventory {
   updatedAt DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+model InventoryMovement {
+  id        String                @id @default(cuid())
+  productId String
+  type      InventoryMovementType
+  quantity  Int
+  reason    String?
+  createdAt DateTime              @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+  @@index([type])
 }
