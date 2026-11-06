@@ -34,3 +34,14 @@ export const createCustomerSchema = z.object({
 export type CreateCustomerInput = z.infer<
   typeof createCustomerSchema
 >;
+
+export const updateCustomerSchema = createCustomerSchema
+  .partial()
+  .refine(
+    (data) => Object.keys(data).length > 0,
+    "At least one field must be provided.",
+  );
+
+export type UpdateCustomerInput = z.infer<
+  typeof updateCustomerSchema
+>;

@@ -111,6 +111,7 @@ try {
       "tests/paystack-webhook.integration.test.mts",
       "tests/product.integration.test.mts",
       "tests/inventory.integration.test.mts",
+      "tests/customers.integration.test.mts",
     ],
     {
       stdio: "inherit",

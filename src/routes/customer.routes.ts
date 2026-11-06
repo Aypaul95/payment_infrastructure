@@ -6,8 +6,11 @@ import {
   createCustomer,
   listCustomers,
   getCustomerById,
+  updateCustomer,
+  deleteCustomer,
+  getCustomerPayments,
 } from "../services/customer.service";
-import { createCustomerSchema } from "../validators/customer.validator";
+import { createCustomerSchema, updateCustomerSchema } from "../validators/customer.validator";
 
 export const customerRouter = Router();
 
@@ -104,6 +107,132 @@ customerRouter.get("/:id", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to retrieve customer.",
+    });
+  }
+});
+
+
+customerRouter.patch("/:id", async (req, res) => {
+  const customerId = req.params.id;
+
+  const validation = updateCustomerSchema.safeParse(req.body);
+
+  if (!validation.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid customer update data.",
+      errors: validation.error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+  }
+
+  try {
+    const customer = await updateCustomer(
+      req.auth!.businessAccountId,
+      customerId,
+      validation.data,
+    );
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Customer updated successfully.",
+      data: customer,
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: "This customer reference already exists for your business.",
+      });
+    }
+
+    console.error("Failed to update customer:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update customer.",
+    });
+  }
+});
+
+
+customerRouter.delete("/:id", async (req, res) => {
+  const customerId = req.params.id;
+
+  try {
+    const deleted = await deleteCustomer(
+      req.auth!.businessAccountId,
+      customerId,
+    );
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found.",
+      });
+    }
+
+    if (deleted === "HAS_PAYMENTS") {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This customer cannot be deleted because payment records are associated with them.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Customer deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Failed to delete customer:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to delete customer.",
+    });
+  }
+});
+
+customerRouter.get("/:id/payments", async (req, res) => {
+  const customerId = req.params.id;
+
+  try {
+    const payments = await getCustomerPayments(
+      req.auth!.businessAccountId,
+      customerId,
+    );
+
+    if (!payments) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      count: payments.length,
+      data: payments,
+    });
+  } catch (error) {
+    console.error("Failed to retrieve customer payments:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve customer payments.",
     });
   }
 });
