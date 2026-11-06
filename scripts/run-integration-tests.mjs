@@ -1,4 +1,3 @@
-
 import { spawnSync } from "node:child_process";
 import { emitKeypressEvents } from "node:readline";
 import { stdin, stdout } from "node:process";
@@ -71,9 +70,37 @@ try {
     throw new Error("Safety check failed: unexpected database.");
   }
 
+  const testEnvironment = {
+    ...process.env,
+    DATABASE_URL: databaseUrl.toString(),
+  };
+
+  console.log(
+    `\nApplying pending migrations to ${databaseName}...\n`,
+  );
+
+  const migrationResult = spawnSync(
+    "npx",
+    ["prisma", "migrate", "deploy"],
+    {
+      stdio: "inherit",
+      env: testEnvironment,
+    },
+  );
+
+  if (migrationResult.error) {
+    throw migrationResult.error;
+  }
+
+  if (migrationResult.status !== 0) {
+    throw new Error(
+      "Test database migration deployment failed. Integration tests were not started.",
+    );
+  }
+
   console.log("\nRunning integration tests against the test database...\n");
 
-  const result = spawnSync(
+  const testResult = spawnSync(
     "npx",
     [
       "tsx",
@@ -82,21 +109,19 @@ try {
       "tests/auth.integration.test.mts",
       "tests/payment-reconciliation.integration.test.mts",
       "tests/paystack-webhook.integration.test.mts",
+      "tests/product.integration.test.mts",
     ],
     {
       stdio: "inherit",
-      env: {
-        ...process.env,
-        DATABASE_URL: databaseUrl.toString(),
-      },
+      env: testEnvironment,
     },
   );
 
-  if (result.error) {
-    throw result.error;
+  if (testResult.error) {
+    throw testResult.error;
   }
 
-  process.exitCode = result.status ?? 1;
+  process.exitCode = testResult.status ?? 1;
 } catch (error) {
   console.error("\nIntegration test runner failed:", error.message);
   process.exitCode = 1;
