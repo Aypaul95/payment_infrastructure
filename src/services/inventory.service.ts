@@ -122,25 +122,21 @@ export async function stockOut(
       return null;
     }
 
-    const inventory = await tx.inventory.updateMany({
-      where: {
-        productId,
-        quantity: {
-          gte: input.quantity,
-        },
-      },
-      data: {
-        quantity: {
-          decrement: input.quantity,
-        },
-      },
-    });
+  const updatedCount = await tx.$executeRaw`
+  UPDATE "Inventory"
+  SET
+    "quantity" = "quantity" - ${input.quantity},
+    "updatedAt" = NOW()
+  WHERE
+    "productId" = ${productId}
+    AND ("quantity" - "reservedQuantity") >= ${input.quantity}
+`;
 
-    if (inventory.count === 0) {
-      return {
-        insufficientStock: true as const,
-      };
-    }
+      if (updatedCount === 0) {
+          return {
+              insufficientStock: true as const,
+          };
+      }
 
     const updatedInventory = await tx.inventory.findUnique({
       where: {

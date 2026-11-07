@@ -10,6 +10,7 @@ import { customerRouter } from "./routes/customer.routes";
 import { paymentRouter } from "./routes/payment.routes";
 import { productRouter } from "./routes/product.routes";
 import { inventoryRouter } from "./routes/inventory.routes";
+import { orderRouter } from "./routes/order.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
 
 const app = express();
@@ -38,6 +39,7 @@ app.use("/customers", customerRouter);
 app.use("/products", productRouter);
 app.use("/inventory", inventoryRouter);
 app.use("/payments", paymentRouter);
+app.use("/orders", orderRouter);
 
 // Public health check
 app.get("/health", (_req, res) => {

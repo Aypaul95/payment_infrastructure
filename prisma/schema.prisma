@@ -36,6 +36,18 @@ enum InventoryMovementType {
   ADJUSTMENT
 }
 
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  CONFIRMED
+  PROCESSING
+  READY_FOR_DELIVERY
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
 model BusinessAccount {
   id           String   @id @default(cuid())
   businessName String
@@ -50,6 +62,7 @@ model BusinessAccount {
   customers Customer[]
   payments  Payment[]
   products  Product[]
+  orders    Order[]
 }
 
 model BusinessUser {
@@ -78,6 +91,7 @@ model Customer {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   payments          Payment[]
+  orders            Order[]
 
   businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
 
@@ -116,11 +130,14 @@ model Payment {
 
   businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
   customer        Customer?       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  orderId         String?
+  order           Order?          @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@unique([businessAccountId, idempotencyKey])
   @@index([businessAccountId])
   @@index([customerId])
   @@index([businessAccountId, status])
+  @@index([orderId])
   // 2.6. Find pending payments that are ready for reconciliation.
   @@index([status, nextReconciliationAt])
 }
@@ -164,6 +181,7 @@ model Product {
   businessAccount    BusinessAccount     @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
   inventory          Inventory?
   inventoryMovements InventoryMovement[]
+  orderItems         OrderItem[]
 
   @@unique([businessAccountId, sku])
   @@index([businessAccountId])
@@ -176,7 +194,8 @@ model Inventory {
   quantity  Int      @default(0)
   updatedAt DateTime @updatedAt
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product          Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  reservedQuantity Int     @default(0)
 }
 
 model InventoryMovement {
@@ -191,4 +210,48 @@ model InventoryMovement {
 
   @@index([productId, createdAt])
   @@index([type])
+}
+
+model Order {
+  id                String      @id @default(cuid())
+  businessAccountId String
+  customerId        String
+  orderNumber       String
+  idempotencyKey    String
+  status            OrderStatus @default(PENDING_PAYMENT)
+  subtotal          BigInt
+  discount          BigInt      @default(0)
+  total             BigInt
+  currency          String      @default("NGN")
+  notes             String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items           OrderItem[]
+  payments        Payment[]
+
+  @@unique([businessAccountId, orderNumber])
+  @@unique([businessAccountId, idempotencyKey])
+  @@index([businessAccountId, status])
+  @@index([customerId, createdAt])
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  productId   String
+  productName String
+  sku         String
+  quantity    Int
+  unitPrice   BigInt
+  subtotal    BigInt
+  createdAt   DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
 }
