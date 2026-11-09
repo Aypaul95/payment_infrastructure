@@ -27,6 +27,16 @@ app.use(
       confirmPayment: async (reference) => {
           confirmationCalls.push(reference);
 
+          if (reference.startsWith("webhook-duplicate-charge-")) {
+              return {
+                  outcome: "DUPLICATE_CHARGE",
+                  paymentId: "test-payment-id",
+                  reference,
+                  orderId: "test-order-id",
+                  orderStatus: "CANCELLED",
+              };
+          }
+
           return {
               outcome: "SUCCESSFUL",
               paymentId: "test-payment-id",
@@ -232,4 +242,29 @@ test("duplicate webhook deliveries are acknowledged", async () => {
     confirmationCalls.filter((item) => item === reference).length,
     2,
   );
+});
+test("duplicate charge is acknowledged and flagged for review", async () => {
+  const reference = `webhook-duplicate-charge-${randomUUID()}`;
+
+  await createPaymentRecord(reference);
+
+  const originalConfirmPayment = confirmationCalls.length;
+
+  const response = await sendWebhook({
+    reference,
+    amount: 5000,
+    currency: "NGN",
+  });
+
+  assert.equal(response.status, 200);
+
+  const body = await response.json();
+
+  assert.equal(body.message, "Charge acknowledged for review.");
+  assert.equal(body.data.paymentId, "test-payment-id");
+  assert.equal(body.data.orderId, "test-order-id");
+  assert.equal(body.data.orderStatus, "CANCELLED");
+  assert.equal(body.data.requiresReview, true);
+  assert.ok(confirmationCalls.length > originalConfirmPayment);
+  assert.ok(confirmationCalls.includes(reference));
 });

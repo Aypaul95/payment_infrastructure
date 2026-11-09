@@ -28,6 +28,7 @@ if (!jwtSecret || jwtSecret.length < 32) {
 
 const { prisma } = await import("../src/lib/prisma");
 const { orderRouter } = await import("../src/routes/order.routes");
+const { paymentRouter } = await import("../src/routes/payment.routes");
 
 let businessAccountId = "";
 let businessUserId = "";
@@ -37,10 +38,68 @@ let customerId = "";
 let secondBusinessCustomerId = "";
 let server: ReturnType<typeof app.listen>;
 let baseUrl = "";
+let checkoutCustomerId = "";
 
 const app = express();
 app.use(express.json());
 app.use("/orders", orderRouter);
+app.use("/payments", paymentRouter);
+
+const mockPaystackInitializationCalls = new Map<string, number>();
+
+let mockPaystackInitializationDelay: () => Promise<void> = async () => {};
+function delayMockPaystackInitialization() {
+  let release!: () => void;
+  let markStarted!: () => void;
+
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+
+  let hasPausedFirstRequest = false;
+
+  mockPaystackInitializationDelay = () => {
+    if (hasPausedFirstRequest) {
+      return Promise.resolve();
+    }
+
+    hasPausedFirstRequest = true;
+    markStarted();
+
+    return new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  };
+
+  return {
+    started,
+    release: () => {
+      mockPaystackInitializationDelay = async () => { };
+      release();
+    },
+  };
+}
+
+app.post("/transaction/initialize", async (req, res) => {
+  const reference = req.body.reference as string;
+
+  mockPaystackInitializationCalls.set(
+    reference,
+    (mockPaystackInitializationCalls.get(reference) ?? 0) + 1,
+  );
+
+  await mockPaystackInitializationDelay();
+
+  return res.status(200).json({
+    status: true,
+    message: "Authorization URL created",
+    data: {
+      authorization_url: "https://checkout.example.com/mock",
+      access_code: "mock_access_code",
+      reference,
+    },
+  });
+});
 
 function createToken(userId: string, accountId: string) {
   return jwt.sign(
@@ -178,6 +237,15 @@ before(async () => {
   });
 
   customerId = firstCustomer.id;
+  const checkoutCustomer = await prisma.customer.create({
+    data: {
+      businessAccountId,
+      name: "Checkout Integration Test Customer",
+      email: "checkout-test@example.com",
+    },
+  });
+
+  checkoutCustomerId = checkoutCustomer.id;
 
   const secondCustomer = await prisma.customer.create({
     data: {
@@ -202,6 +270,8 @@ before(async () => {
   }
 
   baseUrl = `http://127.0.0.1:${address.port}`;
+  process.env.PAYSTACK_BASE_URL = baseUrl;
+  process.env.PAYSTACK_SECRET_KEY = "test_paystack_secret_key";
 });
 
 after(async () => {
@@ -685,4 +755,425 @@ test("rejects requests without an authentication token", async () => {
 
   assert.equal(response.status, 401);
   assert.equal(body.success, false);
+});
+
+test("initializes Paystack checkout for an existing order", async () => {
+  const product = await createTestProduct();
+
+  const orderPayload = createOrderPayload(product.id, {
+    customerId: checkoutCustomerId,
+  });
+
+  const orderResponse = await createOrderRequest(orderPayload);
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+
+  const idempotencyKey = randomUUID();
+
+  const checkoutResponse = await fetch(
+    `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ idempotencyKey }),
+    },
+  );
+
+  const checkoutBody = await checkoutResponse.json();
+
+  assert.equal(checkoutResponse.status, 200);
+  assert.equal(checkoutBody.success, true);
+  assert.equal(
+    checkoutBody.message,
+    "Order checkout initialized successfully.",
+  );
+
+  assert.equal(checkoutBody.data.status, "PENDING");
+  assert.equal(
+    checkoutBody.data.authorizationUrl,
+    "https://checkout.example.com/mock",
+  );
+  assert.equal(
+    checkoutBody.data.accessCode,
+    "mock_access_code",
+  );
+
+  assert.equal(
+  mockPaystackInitializationCalls.get(checkoutBody.data.reference),
+  1,
+);
+});
+test("rejects checkout when the order has already been paid", async () => {
+  const product = await createTestProduct();
+
+  const orderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+
+  const orderId = orderBody.data.id;
+
+  const payment = await prisma.payment.create({
+    data: {
+      businessAccountId,
+      customerId: checkoutCustomerId,
+      orderId,
+      idempotencyKey: randomUUID(),
+      reference: `PAY-${randomUUID()}`,
+      amount: BigInt(orderBody.data.total),
+      currency: orderBody.data.currency,
+      status: "SUCCESSFUL",
+    },
+  });
+
+  await prisma.order.update({
+    where: {
+      id: orderId,
+    },
+    data: {
+      status: "PAID",
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/payments/orders/${orderId}/checkout`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        idempotencyKey: randomUUID(),
+      }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.equal(
+  body.message,
+  "This order is not awaiting payment.",
+);
+
+  assert.equal(
+    mockPaystackInitializationCalls.get(payment.reference) ?? 0,
+    0,
+  );
+
+  assert.equal(payment.status, "SUCCESSFUL");
+});
+
+test("reuses an existing Paystack checkout session for the same idempotency key", async () => {
+  const product = await createTestProduct();
+
+  const orderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+
+  const idempotencyKey = randomUUID();
+
+  async function initializeCheckout() {
+    return fetch(
+      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ idempotencyKey }),
+      },
+    );
+  }
+
+  const firstResponse = await initializeCheckout();
+  const firstBody = await firstResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstBody.success, true);
+
+  const secondResponse = await initializeCheckout();
+  const secondBody = await secondResponse.json();
+
+  assert.equal(secondResponse.status, 200);
+  assert.equal(secondBody.success, true);
+
+  assert.equal(
+    secondBody.data.paymentId,
+    firstBody.data.paymentId,
+  );
+
+  assert.equal(
+    secondBody.data.reference,
+    firstBody.data.reference,
+  );
+
+  assert.equal(
+    secondBody.data.authorizationUrl,
+    firstBody.data.authorizationUrl,
+  );
+
+  assert.equal(
+    secondBody.data.accessCode,
+    firstBody.data.accessCode,
+  );
+
+  assert.equal(
+    mockPaystackInitializationCalls.get(firstBody.data.reference),
+    1,
+  );
+});
+
+test("handles concurrent checkout requests with the same idempotency key", async () => {
+  const product = await createTestProduct();
+
+  const orderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+
+  const idempotencyKey = randomUUID();
+
+  async function initializeCheckout() {
+    return fetch(
+      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ idempotencyKey }),
+      },
+    );
+  }
+
+  const [firstResponse, secondResponse] = await Promise.all([
+    initializeCheckout(),
+    initializeCheckout(),
+  ]);
+
+  const [firstBody, secondBody] = await Promise.all([
+    firstResponse.json(),
+    secondResponse.json(),
+  ]);
+
+  assert.ok(
+    [200, 409].includes(firstResponse.status),
+  );
+
+  assert.ok(
+    [200, 409].includes(secondResponse.status),
+  );
+
+  const successfulBodies = [
+    { status: firstResponse.status, body: firstBody },
+    { status: secondResponse.status, body: secondBody },
+  ].filter((result) => result.status === 200);
+
+  assert.ok(successfulBodies.length >= 1);
+
+  for (const result of successfulBodies) {
+    assert.equal(
+      result.body.data.reference,
+      successfulBodies[0].body.data.reference,
+    );
+  }
+
+  assert.equal(
+    mockPaystackInitializationCalls.get(
+      successfulBodies[0].body.data.reference,
+    ),
+    1,
+  );
+});
+
+test("prevents an expired checkout lock owner from overwriting a newer session", async () => {
+  const product = await createTestProduct();
+
+  const orderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+
+  const idempotencyKey = randomUUID();
+
+  const delayed = delayMockPaystackInitialization();
+
+  async function initializeCheckout() {
+    return fetch(
+      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ idempotencyKey }),
+      },
+    );
+  }
+
+  const firstRequest = initializeCheckout();
+
+  try {
+    await delayed.started;
+
+    const payment = await prisma.payment.findFirstOrThrow({
+      where: {
+        orderId: orderBody.data.id,
+      },
+    });
+
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        checkoutLockedUntil: new Date(Date.now() - 1000),
+      },
+    });
+
+    const secondResponse = await initializeCheckout();
+    const secondBody = await secondResponse.json();
+
+    assert.equal(secondResponse.status, 200);
+
+    assert.equal(
+      secondBody.data.authorizationUrl,
+      "https://checkout.example.com/mock",
+    );
+
+    delayed.release();
+
+    const firstResponse = await firstRequest;
+    const firstBody = await firstResponse.json();
+
+    assert.equal(firstResponse.status, 409);
+    assert.equal(firstBody.message, "Checkout initialization ownership was lost. Please retry checkout.");
+
+    const savedPayment = await prisma.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+    });
+
+    assert.equal(
+      savedPayment.authorizationUrl,
+      secondBody.data.authorizationUrl,
+    );
+
+    assert.equal(
+      savedPayment.accessCode,
+      secondBody.data.accessCode,
+    );
+
+    assert.equal(savedPayment.checkoutLockToken, null);
+    assert.equal(savedPayment.checkoutLockedUntil, null);
+  } finally {
+    delayed.release();
+  }
+});
+
+test("rejects reuse of a checkout idempotency key for another order", async () => {
+  const product = await createTestProduct();
+
+  const firstOrderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const firstOrderBody = await firstOrderResponse.json();
+
+  assert.equal(firstOrderResponse.status, 201);
+
+  const secondOrderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: checkoutCustomerId,
+    }),
+  );
+
+  const secondOrderBody = await secondOrderResponse.json();
+
+  assert.equal(secondOrderResponse.status, 201);
+
+  const idempotencyKey = randomUUID();
+
+  async function initializeCheckout(orderId: string) {
+    return fetch(
+      `${baseUrl}/payments/orders/${orderId}/checkout`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ idempotencyKey }),
+      },
+    );
+  }
+
+  const firstResponse = await initializeCheckout(
+    firstOrderBody.data.id,
+  );
+
+  assert.equal(firstResponse.status, 200);
+
+  const secondResponse = await initializeCheckout(
+    secondOrderBody.data.id,
+  );
+
+  const secondBody = await secondResponse.json();
+
+  assert.equal(secondResponse.status, 409);
+  assert.equal(secondBody.success, false);
+  assert.equal(
+    secondBody.message,
+    "This idempotency key has already been used with different checkout details.",
+  );
+});
+
+test("does not allow one business to initialize checkout for another business's order", async () => {
+  const product = await createTestProduct(secondBusinessAccountId);
+
+  const orderResponse = await createOrderRequest(
+    createOrderPayload(product.id, {
+      customerId: secondBusinessCustomerId,
+    }),
+    authHeaders(secondBusinessUserId, secondBusinessAccountId),
+  );
+
+  const orderBody = await orderResponse.json();
+
+  assert.equal(orderResponse.status, 201);
+ const callsBeforeRequest = mockPaystackInitializationCalls.size;
+
+  const response = await fetch(
+    `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        idempotencyKey: randomUUID(),
+      }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Order not found.");
+
+  assert.equal(
+    mockPaystackInitializationCalls.size,
+    callsBeforeRequest,
+  );
 });

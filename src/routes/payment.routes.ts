@@ -10,8 +10,9 @@ import {
   listPayments,
   getPaymentById,
 } from "../services/payment.service";
-import { createPaymentSchema , initializePaystackSchema,} from "../validators/payment.validator";
+import { createPaymentSchema , initializePaystackSchema, orderCheckoutSchema, } from "../validators/payment.validator";
 import { confirmPayment } from "../services/payment-confirmation.service";
+import { createOrderCheckout } from "../services/order-checkout.service";
 
 export const paymentRouter = Router();
 
@@ -239,6 +240,134 @@ paymentRouter.post("/:id/initialize", async (req, res) => {
 
 });
 
+// Initialize Paystack checkout for an existing order.
+paymentRouter.post("/orders/:orderId/checkout", async (req, res) => {
+  const validation = orderCheckoutSchema.safeParse(req.body);
+
+  if (!validation.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid order checkout data.",
+      errors: validation.error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+  }
+
+  try {
+    const result = await createOrderCheckout({
+      businessAccountId: req.auth!.businessAccountId,
+      orderId: req.params.orderId,
+      idempotencyKey: validation.data.idempotencyKey,
+      email: validation.data.email,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Order checkout initialized successfully.",
+      data: result,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      const clientErrors: Record<
+        string,
+        { status: number; message: string }
+      > = {
+        ORDER_NOT_FOUND: {
+          status: 404,
+          message: "Order not found.",
+        },
+        IDEMPOTENCY_KEY_REUSED: {
+          status: 409,
+          message: "This idempotency key has already been used with different checkout details.",
+        },
+        PAYMENT_ATTEMPT_FAILED: {
+          status: 409,
+          message: "The previous payment attempt failed. Start a new checkout with a new idempotency key.",
+        },
+        ORDER_NOT_PAYABLE: {
+          status: 409,
+          message: "This order is not awaiting payment.",
+        },
+        INVALID_PAYMENT_AMOUNT: {
+          status: 400,
+          message: "The order amount is invalid for payment processing.",
+        },
+        PAYMENT_ALREADY_SUCCESSFUL: {
+          status: 409,
+          message: "This order has already been paid.",
+        },
+        PAYMENT_ATTEMPT_IN_PROGRESS: {
+          status: 409,
+          message: "A payment attempt is already in progress for this order.",
+        },
+        CUSTOMER_EMAIL_REQUIRED: {
+          status: 400,
+          message: "A valid customer email is required for checkout.",
+        },
+        CHECKOUT_CONCURRENCY_RETRY_EXHAUSTED: {
+          status: 409,
+          message: "Checkout is busy. Please try again.",
+        },
+        CHECKOUT_INITIALIZATION_IN_PROGRESS: {
+          status: 409,
+          message: "Checkout initialization is already in progress. Please try again shortly.",
+        },
+        CHECKOUT_LOCK_LOST: {
+          status: 409,
+          message: "Checkout initialization ownership was lost. Please retry checkout.",
+        },
+        PAYMENT_NOT_PENDING: {
+          status: 409,
+          message: "This payment is no longer pending.",
+        },
+      };
+
+      const clientError = clientErrors[error.message];
+
+      if (clientError) {
+        return res.status(clientError.status).json({
+          success: false,
+          message: clientError.message,
+        });
+      }
+
+      if (
+        [
+          "PAYSTACK_SECRET_KEY_NOT_CONFIGURED",
+          "PAYSTACK_INITIALIZATION_FAILED",
+          "PAYSTACK_REQUEST_TIMEOUT",
+          "INVALID_PAYSTACK_RESPONSE",
+        ].includes(error.message)
+      ) {
+        console.error("Order checkout initialization failed:", error);
+
+        return res.status(
+          error.message === "PAYSTACK_SECRET_KEY_NOT_CONFIGURED"
+            ? 500
+            : 502,
+        ).json({
+          success: false,
+          message:
+            error.message === "PAYSTACK_SECRET_KEY_NOT_CONFIGURED"
+              ? "Payment provider is not configured."
+              : error.message === "PAYSTACK_REQUEST_TIMEOUT"
+                ? "Payment provider request timed out. Please try again."
+                : "Unable to initialize checkout with the payment provider.",
+        });
+      }
+    }
+
+    console.error("Order checkout failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to initialize order checkout.",
+    });
+  }
+});
+
 paymentRouter.post("/:id/verify", async (req, res) => {
     const businessAccountId = req.auth!.businessAccountId;
     const paymentId = req.params.id;
@@ -280,6 +409,17 @@ paymentRouter.post("/:id/verify", async (req, res) => {
                     },
                 });
 
+          case "FAILED":
+            return res.status(200).json({
+              success: true,
+              message: "Payment was confirmed as failed.",
+              data: {
+                paymentId: result.paymentId,
+                reference: result.reference,
+                status: "FAILED",
+              },
+            });
+
             case "PENDING":
                 return res.status(200).json({
                     success: true,
@@ -312,6 +452,21 @@ paymentRouter.post("/:id/verify", async (req, res) => {
                         paymentId: result.paymentId,
                         reference: result.reference,
                         status: result.currentStatus,
+                    },
+                });
+
+            case "DUPLICATE_CHARGE":
+                return res.status(409).json({
+                    success: false,
+                    message:
+                        "Payment succeeded, but the order is no longer awaiting payment. The charge requires review.",
+                    data: {
+                        paymentId: result.paymentId,
+                        reference: result.reference,
+                        orderId: result.orderId,
+                        orderStatus: result.orderStatus,
+                        paymentStatus: "SUCCESSFUL",
+                        requiresReview: true,
                     },
                 });
         }

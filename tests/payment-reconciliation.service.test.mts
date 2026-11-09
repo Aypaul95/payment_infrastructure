@@ -194,3 +194,36 @@ test("preserves DETAILS_MISMATCH from payment confirmation", async () => {
   assert.equal(result?.outcome, "DETAILS_MISMATCH");
   assert.equal(recordedOutcome, "DETAILS_MISMATCH");
 });
+// TEST 7
+// 9. Preserve DUPLICATE_CHARGE and do not schedule another reconciliation.
+test("records DUPLICATE_CHARGE without scheduling a retry", async () => {
+  let recordedOutcome: string | undefined;
+  let recordedRetryTime: Date | null | undefined;
+
+  const dependencies = createDependencies({
+    confirmPayment: async (): Promise<PaymentConfirmationResult> => ({
+      outcome: "DUPLICATE_CHARGE",
+      paymentId: payment.id,
+      reference: payment.reference,
+      orderId: "order-reconciliation-test-123",
+      orderStatus: "CANCELLED",
+    }),
+
+    recordReconciliationAttempt: async (
+      _payment,
+      outcome,
+      _now,
+    ) => {
+      recordedOutcome = outcome;
+      recordedRetryTime = null;
+      return null;
+    },
+  });
+
+  const result = await processNextPaymentWithDependencies(dependencies);
+
+  assert.equal(result?.outcome, "DUPLICATE_CHARGE");
+  assert.equal(recordedOutcome, "DUPLICATE_CHARGE");
+  assert.equal(recordedRetryTime, null);
+  assert.equal(result?.nextReconciliationAt, null);
+});

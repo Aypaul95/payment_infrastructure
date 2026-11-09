@@ -31,7 +31,9 @@ export type ReconciliationOutcome =
   | "DETAILS_MISMATCH"
   | "PROVIDER_ERROR"
   | "NOT_FOUND"
-  | "NOT_PENDING";
+  | "NOT_PENDING"
+  | "DUPLICATE_CHARGE"
+  | "FAILED";
 
 // 6. Define the result returned by the reconciliation service.
 export type PaymentReconciliationResult = {

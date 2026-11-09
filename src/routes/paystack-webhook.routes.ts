@@ -155,6 +155,12 @@ export function createPaystackWebhookRouter(
             message: "Payment remains pending.",
           });
 
+        case "FAILED":
+          return res.status(200).json({
+            success: true,
+            message: "Payment confirmed as failed.",
+          });
+
         case "NOT_FOUND":
           return res.status(200).json({
             success: true,
@@ -176,6 +182,28 @@ export function createPaystackWebhookRouter(
           return res.status(200).json({
             success: true,
             message: "Payment status was not changed.",
+          });
+
+        case "DUPLICATE_CHARGE":
+          console.error(
+            "Paystack confirmed a charge for an order that is no longer awaiting payment:",
+            {
+              reference: result.reference,
+              paymentId: result.paymentId,
+              orderId: result.orderId,
+              orderStatus: result.orderStatus,
+            },
+          );
+
+          return res.status(200).json({
+            success: true,
+            message: "Charge acknowledged for review.",
+            data: {
+              paymentId: result.paymentId,
+              orderId: result.orderId,
+              orderStatus: result.orderStatus,
+              requiresReview: true,
+            },
           });
       }
     } catch (error) {

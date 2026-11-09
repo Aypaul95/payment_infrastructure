@@ -45,7 +45,27 @@ export type CreatePaymentInput = z.infer<
   typeof createPaymentSchema
 >;
 
+export const orderCheckoutSchema = z.object({
+    idempotencyKey: z
+        .string()
+        .trim()
+        .min(8, "Idempotency key must be at least 8 characters.")
+        .max(100, "Idempotency key cannot exceed 100 characters."),
+
+    email: z
+        .string()
+        .trim()
+        .email("A valid payer email is required.")
+        .optional(),
+});
+
+export type OrderCheckoutInput = z.infer<
+    typeof orderCheckoutSchema
+>;
 
 export const initializePaystackSchema = z.object({
-  email: z.string().trim().email("A valid payer email is required."),
+  email: z
+    .string()
+    .trim()
+    .email("A valid payer email is required."),
 });

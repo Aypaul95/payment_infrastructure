@@ -29,7 +29,7 @@ function createDependencies(options?: {
   updatedCount?: number;
   latestStatus?: string;
 }) {
-  // Simulated payment record returned by our mock database.
+  // Simulated payment record returned by the mock database.
   const payment = {
     id: "payment-test-001",
     businessAccountId: "business-test-001",
@@ -37,44 +37,55 @@ function createDependencies(options?: {
     amount: BigInt(5000),
     currency: "NGN",
     status: options?.status ?? "PENDING",
+    orderId: null as string | null,
   };
 
-  // Counters help us verify how many times the confirmation
-  // service contacts Paystack and attempts a database update.
   let verificationCalls = 0;
   let updateCalls = 0;
+  let failureUpdateCalls = 0;
 
-  // These functions imitate the database and Paystack operations
-  // required by confirmPaymentWithDependencies().
-    const dependencies = {
-        // Simulates searching for a payment using its reference.
-        // The database may return null when the payment does not exist.
-        findFirst: async (): Promise<typeof payment | null> => payment,
+  const dependencies = {
+    findFirst: async (): Promise<typeof payment | null> => payment,
 
-    // Simulates updating a payment in the database.
-    updateMany: async () => {
+    // Simulate the atomic payment-confirmation operation.
+    confirmSuccessfulPayment: async () => {
       updateCalls++;
 
-      // Simulate a situation where another process has already
-      // changed the payment status before our update.
+      // Simulate another process confirming the payment first.
       if (options?.updatedCount === 0) {
-        return { count: 0 };
+        if (options.latestStatus === "SUCCESSFUL") {
+          return { outcome: "SUCCESSFUL" as const };
+        }
+
+        return {
+          outcome: "NOT_PENDING" as const,
+          currentStatus: options?.latestStatus ?? payment.status,
+        };
       }
 
-      // Otherwise, simulate a successful database update.
       payment.status = "SUCCESSFUL";
 
-      return { count: 1 };
+      return { outcome: "SUCCESSFUL" as const };
     },
 
-    // Simulates retrieving the latest payment status after
-    // an attempted update fails to modify any records.
-    findUnique: async () => ({
-      status: options?.latestStatus ?? payment.status,
-    }),
+    // Simulate the atomic payment-failure operation.
+    markFailedPayment: async () => {
+      failureUpdateCalls++;
 
-    // Simulates Paystack transaction verification.
-    // No actual HTTP request is made.
+      // Simulate another process changing the payment first.
+      if (options?.updatedCount === 0) {
+        return {
+          outcome: "NOT_PENDING" as const,
+          currentStatus: options?.latestStatus ?? payment.status,
+        };
+      }
+
+      payment.status = "FAILED";
+
+      return { outcome: "FAILED" as const };
+    },
+
+    // Simulate Paystack verification.
     verifyTransaction: async () => {
       verificationCalls++;
 
@@ -87,12 +98,11 @@ function createDependencies(options?: {
     },
   };
 
-  // Return the mock dependencies and counter accessors.
-  // The tests use these counters to verify service behaviour.
   return {
     dependencies,
     getVerificationCalls: () => verificationCalls,
     getUpdateCalls: () => updateCalls,
+    getFailureUpdateCalls: () => failureUpdateCalls,
   };
 }
 
@@ -306,4 +316,52 @@ test("handles a concurrent confirmation by reading the latest status", async () 
 
   // Our update was attempted once but did not update a record.
   assert.equal(setup.getUpdateCalls(), 1);
+});
+
+// ============================================================
+// TEST VERIFIED FAILED PAYMENT
+// ============================================================
+
+test("marks a pending payment as failed after provider verification", async () => {
+  const setup = createDependencies({
+    providerStatus: "failed",
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.deepEqual(result, {
+    outcome: "FAILED",
+    paymentId: "payment-test-001",
+    reference: "PAY-TEST-001",
+  });
+
+  assert.equal(setup.getVerificationCalls(), 1);
+  assert.equal(setup.getUpdateCalls(), 0);
+  assert.equal(setup.getFailureUpdateCalls(), 1);
+});
+
+test("does not overwrite a concurrently successful payment with FAILED", async () => {
+  const setup = createDependencies({
+    providerStatus: "failed",
+    updatedCount: 0,
+    latestStatus: "SUCCESSFUL",
+  });
+
+  const result = await confirmPaymentWithDependencies(
+    "PAY-TEST-001",
+    setup.dependencies,
+  );
+
+  assert.deepEqual(result, {
+    outcome: "NOT_PENDING",
+    paymentId: "payment-test-001",
+    reference: "PAY-TEST-001",
+    currentStatus: "SUCCESSFUL",
+  });
+
+  assert.equal(setup.getVerificationCalls(), 1);
+  assert.equal(setup.getFailureUpdateCalls(), 1);
 });

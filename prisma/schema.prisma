@@ -28,6 +28,8 @@ enum ReconciliationOutcome {
   PROVIDER_ERROR
   NOT_FOUND
   NOT_PENDING
+  DUPLICATE_CHARGE
+  FAILED
 }
 
 enum InventoryMovementType {
@@ -110,6 +112,10 @@ model Payment {
   currency          String        @default("NGN")
   status            PaymentStatus @default(PENDING)
   description       String?
+  authorizationUrl  String?
+  accessCode        String?
+  checkoutLockedUntil DateTime?
+   checkoutLockToken  String?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 

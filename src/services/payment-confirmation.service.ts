@@ -1,13 +1,18 @@
-
 import { prisma } from "../lib/prisma";
 import { verifyPaystackTransaction } from "./paystack.service";
 
-// 1. Define every possible result the payment confirmation process can return.
 export type PaymentConfirmationResult =
   | {
       outcome: "SUCCESSFUL";
       paymentId: string;
       reference: string;
+    }
+  | {
+      outcome: "DUPLICATE_CHARGE";
+      paymentId: string;
+      reference: string;
+      orderId: string;
+      orderStatus: string;
     }
   | {
       outcome: "PENDING";
@@ -28,9 +33,13 @@ export type PaymentConfirmationResult =
       paymentId: string;
       reference: string;
       currentStatus: string;
+    }
+  | {
+      outcome: "FAILED";
+      paymentId: string;
+      reference: string;
     };
 
-// 2. Define the structure of a payment record returned by the database.
 type PaymentRecord = {
   id: string;
   businessAccountId: string;
@@ -38,10 +47,9 @@ type PaymentRecord = {
   amount: bigint;
   currency: string;
   status: string;
+  orderId: string | null;
 };
 
-// 3. Define the database and Paystack operations required by this service.
-//    These functions can use real services or fake functions during testing.
 type PaymentConfirmationDependencies = {
   findFirst: (args: {
     where: {
@@ -55,24 +63,27 @@ type PaymentConfirmationDependencies = {
       amount: true;
       currency: true;
       status: true;
+      orderId: true;
     };
   }) => Promise<PaymentRecord | null>;
 
-  updateMany: (args: {
-    where: {
-      id: string;
-      businessAccountId: string;
-      status: "PENDING";
-    };
-    data: {
-      status: "SUCCESSFUL";
-    };
-  }) => Promise<{ count: number }>;
+  confirmSuccessfulPayment: (payment: {
+    id: string;
+    businessAccountId: string;
+    orderId: string | null;
+  }) => Promise<
+    | { outcome: "SUCCESSFUL" }
+    | { outcome: "DUPLICATE_CHARGE"; orderStatus: string }
+    | { outcome: "NOT_PENDING"; currentStatus: string }
+  >;
 
-  findUnique: (args: {
-    where: { id: string };
-    select: { status: true };
-  }) => Promise<{ status: string } | null>;
+    markFailedPayment: (payment: {
+        id: string;
+        businessAccountId: string;
+    }) => Promise<
+        | { outcome: "FAILED" }
+        | { outcome: "NOT_PENDING"; currentStatus: string }
+    >;
 
   verifyTransaction: (reference: string) => Promise<{
     reference: string;
@@ -82,29 +93,110 @@ type PaymentConfirmationDependencies = {
   }>;
 };
 
-// 4. Connect the dependencies to the real Prisma database and Paystack service.
-//    The application uses these default dependencies when processing payments.
+
 const defaultDependencies: PaymentConfirmationDependencies = {
-  findFirst: (args) =>
-    prisma.payment.findFirst(args) as Promise<PaymentRecord | null>,
+    findFirst: (args) =>
+        prisma.payment.findFirst(args) as Promise<PaymentRecord | null>,
 
-  updateMany: (args) => prisma.payment.updateMany(args),
+    confirmSuccessfulPayment: (payment) =>
+        prisma.$transaction(async (tx) => {
+            const updatedPayment = await tx.payment.updateMany({
+                where: {
+                    id: payment.id,
+                    businessAccountId: payment.businessAccountId,
+                    status: "PENDING",
+                },
+                data: {
+                    status: "SUCCESSFUL",
+                },
+            });
 
-  findUnique: (args) => prisma.payment.findUnique(args),
+            if (updatedPayment.count !== 1) {
+                const latestPayment = await tx.payment.findUnique({
+                    where: { id: payment.id },
+                    select: { status: true },
+                });
 
-  verifyTransaction: verifyPaystackTransaction,
+                if (latestPayment?.status === "SUCCESSFUL") {
+                    return { outcome: "SUCCESSFUL" as const };
+                }
+
+                return {
+                    outcome: "NOT_PENDING" as const,
+                    currentStatus: latestPayment?.status ?? "UNKNOWN",
+                };
+            }
+
+            // Standalone payments do not have an associated order.
+            if (!payment.orderId) {
+                return { outcome: "SUCCESSFUL" as const };
+            }
+
+            // Atomically mark the order as paid if it is awaiting payment.
+            const updatedOrder = await tx.order.updateMany({
+                where: {
+                    id: payment.orderId,
+                    businessAccountId: payment.businessAccountId,
+                    status: "PENDING_PAYMENT",
+                },
+                data: {
+                    status: "PAID",
+                },
+            });
+
+            if (updatedOrder.count === 1) {
+                return { outcome: "SUCCESSFUL" as const };
+            }
+
+            // The payment succeeded, but this order was no longer awaiting payment.
+            // Preserve the successful payment and flag the additional charge.
+            const latestOrder = await tx.order.findUnique({
+                where: { id: payment.orderId },
+                select: { status: true },
+            });
+
+            return {
+                outcome: "DUPLICATE_CHARGE" as const,
+                orderStatus: latestOrder?.status ?? "UNKNOWN",
+            };
+        }),
+
+    markFailedPayment: (payment) =>
+        prisma.$transaction(async (tx) => {
+            const updatedPayment = await tx.payment.updateMany({
+                where: {
+                    id: payment.id,
+                    businessAccountId: payment.businessAccountId,
+                    status: "PENDING",
+                },
+                data: {
+                    status: "FAILED",
+                },
+            });
+
+            if (updatedPayment.count === 1) {
+                return { outcome: "FAILED" as const };
+            }
+
+            const latestPayment = await tx.payment.findUnique({
+                where: { id: payment.id },
+                select: { status: true },
+            });
+
+            return {
+                outcome: "NOT_PENDING" as const,
+                currentStatus: latestPayment?.status ?? "UNKNOWN",
+            };
+        }),
+
+    verifyTransaction: verifyPaystackTransaction,
 };
 
-// 5. Create the main payment confirmation function.
-//    Dependencies are passed into this function so tests can use fake database
-//    operations and a fake Paystack response without contacting real services.
 export async function confirmPaymentWithDependencies(
   reference: string,
   dependencies: PaymentConfirmationDependencies,
   businessAccountId?: string,
 ): Promise<PaymentConfirmationResult> {
-  // 5.1. Find the payment in our database using its transaction reference.
-  //      If a business account ID is provided, restrict the search to that account.
   const payment = await dependencies.findFirst({
     where: {
       reference,
@@ -117,16 +209,14 @@ export async function confirmPaymentWithDependencies(
       amount: true,
       currency: true,
       status: true,
+      orderId: true,
     },
   });
 
-  // 5.2. Return NOT_FOUND if no matching payment exists.
   if (!payment) {
     return { outcome: "NOT_FOUND" };
   }
 
-  // 5.3. Check whether the payment has already been confirmed successfully.
-  //      If it has, return SUCCESSFUL without contacting Paystack again.
   if (payment.status === "SUCCESSFUL") {
     return {
       outcome: "SUCCESSFUL",
@@ -135,8 +225,6 @@ export async function confirmPaymentWithDependencies(
     };
   }
 
-  // 5.4. Only payments with PENDING status can proceed to verification.
-  //      Other statuses, such as FAILED, cannot be confirmed here.
   if (payment.status !== "PENDING") {
     return {
       outcome: "NOT_PENDING",
@@ -146,11 +234,8 @@ export async function confirmPaymentWithDependencies(
     };
   }
 
-  // 5.5. Contact Paystack to independently verify the transaction.
   const result = await dependencies.verifyTransaction(payment.reference);
 
-  // 5.6. Compare Paystack's transaction details with our database.
-  //      Reject the confirmation if the reference, amount, or currency differs.
   if (
     result.reference !== payment.reference ||
     !Number.isSafeInteger(result.amount) ||
@@ -165,32 +250,44 @@ export async function confirmPaymentWithDependencies(
     };
   }
 
-  // 5.7. Check Paystack's transaction status.
-  //      If Paystack has not confirmed success, leave our payment as PENDING.
-  if (result.status !== "success") {
-    return {
-      outcome: "PENDING",
-      paymentId: payment.id,
-      reference: payment.reference,
-      providerStatus: result.status,
-    };
-  }
+    if (result.status === "failed") {
+        const failure = await dependencies.markFailedPayment({
+            id: payment.id,
+            businessAccountId: payment.businessAccountId,
+        });
 
-  // 5.8. Update the payment to SUCCESSFUL only if it is still PENDING.
-  //      This condition helps prevent concurrent requests from confirming it twice.
-  const updated = await dependencies.updateMany({
-    where: {
-      id: payment.id,
-      businessAccountId: payment.businessAccountId,
-      status: "PENDING",
-    },
-    data: {
-      status: "SUCCESSFUL",
-    },
+        if (failure.outcome === "FAILED") {
+            return {
+                outcome: "FAILED",
+                paymentId: payment.id,
+                reference: payment.reference,
+            };
+        }
+
+        return {
+            outcome: "NOT_PENDING",
+            paymentId: payment.id,
+            reference: payment.reference,
+            currentStatus: failure.currentStatus,
+        };
+    }
+
+    if (result.status !== "success") {
+        return {
+            outcome: "PENDING",
+            paymentId: payment.id,
+            reference: payment.reference,
+            providerStatus: result.status,
+        };
+    }
+
+  const confirmation = await dependencies.confirmSuccessfulPayment({
+    id: payment.id,
+    businessAccountId: payment.businessAccountId,
+    orderId: payment.orderId,
   });
 
-  // 5.9. If exactly one record was updated, confirmation succeeded.
-  if (updated.count === 1) {
+  if (confirmation.outcome === "SUCCESSFUL") {
     return {
       outcome: "SUCCESSFUL",
       paymentId: payment.id,
@@ -198,34 +295,24 @@ export async function confirmPaymentWithDependencies(
     };
   }
 
-  // 5.10. If no record was updated, another request may have changed its status.
-  //       Retrieve the latest payment status from the database.
-  const latestPayment = await dependencies.findUnique({
-    where: { id: payment.id },
-    select: { status: true },
-  });
-
-  // 5.11. If another request already confirmed the payment, return SUCCESSFUL.
-  if (latestPayment?.status === "SUCCESSFUL") {
+  if (confirmation.outcome === "DUPLICATE_CHARGE") {
     return {
-      outcome: "SUCCESSFUL",
+      outcome: "DUPLICATE_CHARGE",
       paymentId: payment.id,
       reference: payment.reference,
+      orderId: payment.orderId!,
+      orderStatus: confirmation.orderStatus,
     };
   }
 
-  // 5.12. If the payment is still not confirmed, return its latest status.
   return {
     outcome: "NOT_PENDING",
     paymentId: payment.id,
     reference: payment.reference,
-    currentStatus: latestPayment?.status ?? "UNKNOWN",
+    currentStatus: confirmation.currentStatus,
   };
 }
 
-// 6. Provide the main function used by the application's routes and webhook.
-//    It passes the real Prisma and Paystack dependencies to the confirmation logic.
-//    The existing function signature remains unchanged.
 export async function confirmPayment(
   reference: string,
   businessAccountId?: string,
