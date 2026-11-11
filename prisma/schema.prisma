@@ -50,6 +50,39 @@ enum OrderStatus {
   REFUNDED
 }
 
+enum RiderApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum RiderVehicleType {
+  MOTORCYCLE
+  CAR
+  VAN
+  BICYCLE
+}
+
+enum RiderKycDocumentType {
+  NIN
+  NATIONAL_ID
+  DRIVERS_LICENSE
+  INTERNATIONAL_PASSPORT
+  VOTERS_CARD
+}
+
+enum RiderKycStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum RiderKycReviewDecision {
+  VERIFIED
+  REJECTED
+}
+
 model BusinessAccount {
   id           String   @id @default(cuid())
   businessName String
@@ -260,4 +293,70 @@ model OrderItem {
 
   @@index([orderId])
   @@index([productId])
+}
+
+model Rider {
+  id             String              @id @default(cuid())
+  fullName       String
+  phone          String              @unique
+  email          String?             @unique
+  passwordHash   String
+  approvalStatus RiderApprovalStatus @default(PENDING)
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  vehicles       RiderVehicle[]
+  kycSubmissions RiderKycSubmission[]
+
+  @@index([approvalStatus, isActive])
+}
+
+model RiderVehicle {
+  id                 String           @id @default(cuid())
+  riderId            String
+  vehicleType        RiderVehicleType
+  make               String?
+  model              String?
+  color              String?
+  registrationNumber String?          @unique
+  year               Int?
+  isActive           Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Restrict)
+
+  @@index([riderId, isActive])
+}
+
+model RiderKycSubmission {
+  id                  String               @id @default(cuid())
+  riderId             String
+  documentType        RiderKycDocumentType
+  documentStorageKey  String               @unique
+  status              RiderKycStatus       @default(PENDING)
+  submittedAt         DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  reviews RiderKycReview[]
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Restrict)
+
+  @@index([riderId, status])
+  @@index([documentType, status])
+}
+
+model RiderKycReview {
+  id           String                  @id @default(cuid())
+  submissionId String
+  decision     RiderKycReviewDecision
+  reviewedBy   String
+  notes        String?
+  createdAt    DateTime                @default(now())
+
+  submission RiderKycSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+
+  @@index([submissionId, createdAt])
+  @@index([reviewedBy, createdAt])
 }

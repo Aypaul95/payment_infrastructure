@@ -11,6 +11,7 @@ import { paymentRouter } from "./routes/payment.routes";
 import { productRouter } from "./routes/product.routes";
 import { inventoryRouter } from "./routes/inventory.routes";
 import { orderRouter } from "./routes/order.routes";
+import { riderRouter } from "./routes/rider.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
 
 const app = express();
@@ -25,7 +26,7 @@ app.use(
   paystackWebhookRouter,
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 // Interactive API documentation: http://127.0.0.1:3000/docs/
 app.use(
@@ -35,6 +36,7 @@ app.use(
 );
 
 app.use("/auth", authRouter);
+app.use("/riders", riderRouter);
 app.use("/customers", customerRouter);
 app.use("/products", productRouter);
 app.use("/inventory", inventoryRouter);
