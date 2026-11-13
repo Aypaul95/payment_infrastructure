@@ -102,6 +102,34 @@ async function createTestCustomer(
   });
 }
 
+type TestAddressInput = {
+  label?: "HOME" | "OFFICE" | "OTHER";
+  recipientName?: string;
+  recipientPhone?: string;
+  streetAddress?: string;
+  city?: string;
+  state?: string;
+  landmark?: string;
+  latitude?: number;
+  longitude?: number;
+  isDefault?: boolean;
+};
+
+function validAddress(overrides: TestAddressInput = {}) {
+  return {
+    label: "HOME" as const,
+    recipientName: "Test Recipient",
+    recipientPhone: "08012345678",
+    streetAddress: "15 Unity Road",
+    city: "Ilorin",
+    state: "Kwara",
+    landmark: "Near Central Market",
+    latitude: 8.4966,
+    longitude: 4.5421,
+    ...overrides,
+  };
+}
+
 async function createTestPayment(
   accountId: string,
   customerId: string,
@@ -188,9 +216,16 @@ after(async () => {
       where: { businessAccountId },
     });
 
+    await prisma.customerAddress.deleteMany({
+      where: {
+        customerId: { in: customerIds },
+      },
+    });
+
     await prisma.customer.deleteMany({
       where: { businessAccountId },
     });
+
 
     await prisma.businessUser.deleteMany({
       where: { businessAccountId },
@@ -226,6 +261,12 @@ after(async () => {
 
     await prisma.payment.deleteMany({
       where: { businessAccountId: secondBusinessAccountId },
+    });
+
+    await prisma.customerAddress.deleteMany({
+      where: {
+        customerId: { in: customerIds },
+      },
     });
 
     await prisma.customer.deleteMany({
@@ -535,4 +576,463 @@ test("rejects requests without an authentication token", async () => {
 
   assert.equal(response.status, 401);
   assert.equal(body.success, false);
+});
+
+test("creates a customer address and makes the first address default", async () => {
+  const customer = await createTestCustomer();
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(validAddress()),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(body.success, true);
+  assert.equal(body.message, "Customer address created successfully.");
+  assert.equal(body.data.customerId, customer.id);
+  assert.equal(body.data.label, "HOME");
+  assert.equal(body.data.city, "Ilorin");
+  assert.equal(body.data.state, "Kwara");
+  assert.equal(body.data.isDefault, true);
+});
+
+test("allows multiple customer addresses but only one default", async () => {
+  const customer = await createTestCustomer();
+
+  const firstResponse = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(validAddress()),
+    },
+  );
+
+  const firstBody = await firstResponse.json();
+
+  const secondResponse = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(
+        validAddress({
+          label: "OFFICE",
+          streetAddress: "22 Ahmadu Bello Way",
+          isDefault: true,
+        }),
+      ),
+    },
+  );
+
+  const secondBody = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 201);
+  assert.equal(secondResponse.status, 201);
+
+  assert.equal(firstBody.data.isDefault, true);
+  assert.equal(secondBody.data.isDefault, true);
+
+  const addresses = await prisma.customerAddress.findMany({
+    where: { customerId: customer.id },
+  });
+
+  assert.equal(addresses.length, 2);
+  assert.equal(addresses.filter((address) => address.isDefault).length, 1);
+
+  const firstAddress = addresses.find(
+    (address) => address.id === firstBody.data.id,
+  );
+
+  assert.equal(firstAddress?.isDefault, false);
+});
+
+test("lists customer addresses with the default address first", async () => {
+  const customer = await createTestCustomer();
+
+  await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress({
+        label: "HOME",
+        streetAddress: "15 Unity Road",
+        isDefault: false,
+      }),
+    },
+  });
+
+  const defaultAddress = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress({
+        label: "OFFICE",
+        streetAddress: "22 Ahmadu Bello Way",
+        isDefault: true,
+      }),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    { headers: authHeaders() },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.count, 2);
+  assert.equal(body.data[0].id, defaultAddress.id);
+  assert.equal(body.data[0].isDefault, true);
+});
+
+test("updates a customer address", async () => {
+  const customer = await createTestCustomer();
+
+  const address = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+     ...validAddress({ isDefault: true }),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses/${address.id}`,
+    {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        streetAddress: "30 New Unity Road",
+        landmark: "Opposite the post office",
+      }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.message, "Customer address updated successfully.");
+  assert.equal(body.data.streetAddress, "30 New Unity Road");
+  assert.equal(body.data.landmark, "Opposite the post office");
+  assert.equal(body.data.isDefault, true);
+});
+
+test("sets another customer address as the default", async () => {
+  const customer = await createTestCustomer();
+
+  const firstAddress = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress(),
+    },
+  });
+
+  const secondAddress = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress({
+        label: "OFFICE",
+        streetAddress: "22 Ahmadu Bello Way",
+        isDefault: false,
+      }),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses/${secondAddress.id}/default`,
+    {
+      method: "PATCH",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.data.id, secondAddress.id);
+  assert.equal(body.data.isDefault, true);
+
+  const addresses = await prisma.customerAddress.findMany({
+    where: { customerId: customer.id },
+  });
+
+  assert.equal(addresses.filter((address) => address.isDefault).length, 1);
+
+  const updatedFirstAddress = addresses.find(
+    (address) => address.id === firstAddress.id,
+  );
+
+  assert.equal(updatedFirstAddress?.isDefault, false);
+});
+
+test("deletes a customer address and promotes another address to default", async () => {
+  const customer = await createTestCustomer();
+
+  const firstAddress = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress({ isDefault: true }),
+    },
+  });
+
+  const secondAddress = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress({
+        label: "OFFICE",
+        streetAddress: "22 Ahmadu Bello Way",
+        isDefault: false,
+      }),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses/${firstAddress.id}`,
+    {
+      method: "DELETE",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.message, "Customer address deleted successfully.");
+
+  const remainingAddresses = await prisma.customerAddress.findMany({
+    where: { customerId: customer.id },
+  });
+
+  assert.equal(remainingAddresses.length, 1);
+  assert.equal(remainingAddresses[0].id, secondAddress.id);
+  assert.equal(remainingAddresses[0].isDefault, true);
+});
+
+test("does not expose another business's customer addresses", async () => {
+  const customer = await createTestCustomer(
+    secondBusinessAccountId,
+    "Private Address Customer",
+  );
+
+  await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    { headers: authHeaders() },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer not found.");
+});
+
+test("rejects invalid customer address data", async () => {
+  const customer = await createTestCustomer();
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        label: "INVALID",
+        recipientName: "X",
+        recipientPhone: "123",
+        streetAddress: "ABC",
+        city: "I",
+        state: "K",
+        latitude: 120,
+        longitude: 250,
+      }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Invalid customer address data.");
+  assert.ok(Array.isArray(body.errors));
+  assert.ok(body.errors.length > 0);
+});
+
+test("rejects an empty customer address update", async () => {
+  const customer = await createTestCustomer();
+
+  const address = await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}/addresses/${address.id}`,
+    {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify({}),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Invalid customer address update data.");
+  assert.ok(Array.isArray(body.errors));
+});
+
+test("returns 404 when creating an address for an unknown customer", async () => {
+  const response = await fetch(
+    `${baseUrl}/customers/unknown-customer-id/addresses`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(validAddress()),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer not found.");
+});
+
+test("returns 404 when listing addresses for an unknown customer", async () => {
+  const response = await fetch(
+    `${baseUrl}/customers/unknown-customer-id/addresses`,
+    {
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer not found.");
+});
+
+test("returns 404 when updating an address belonging to another customer", async () => {
+  const customerOne = await createTestCustomer();
+  const customerTwo = await createTestCustomer();
+
+  const address = await prisma.customerAddress.create({
+    data: {
+      customerId: customerTwo.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customerOne.id}/addresses/${address.id}`,
+    {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        streetAddress: "Updated Street Address",
+      }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer or address not found.");
+});
+
+test("returns 404 when deleting an address belonging to another customer", async () => {
+  const customerOne = await createTestCustomer();
+  const customerTwo = await createTestCustomer();
+
+  const address = await prisma.customerAddress.create({
+    data: {
+      customerId: customerTwo.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customerOne.id}/addresses/${address.id}`,
+    {
+      method: "DELETE",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer or address not found.");
+});
+
+test("returns 404 when setting another customer's address as default", async () => {
+  const customerOne = await createTestCustomer();
+  const customerTwo = await createTestCustomer();
+
+  const address = await prisma.customerAddress.create({
+    data: {
+      customerId: customerTwo.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customerOne.id}/addresses/${address.id}/default`,
+    {
+      method: "PATCH",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Customer or address not found.");
+});
+
+test("prevents deleting a customer who has saved addresses", async () => {
+  const customer = await createTestCustomer();
+
+  await prisma.customerAddress.create({
+    data: {
+      customerId: customer.id,
+      ...validAddress(),
+    },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/customers/${customer.id}`,
+    {
+      method: "DELETE",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "This customer cannot be deleted because saved addresses are associated with them.");
 });

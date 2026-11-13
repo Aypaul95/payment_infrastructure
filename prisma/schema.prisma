@@ -83,6 +83,12 @@ enum RiderKycReviewDecision {
   REJECTED
 }
 
+enum CustomerAddressLabel {
+  HOME
+  OFFICE
+  OTHER
+}
+
 model BusinessAccount {
   id           String   @id @default(cuid())
   businessName String
@@ -117,16 +123,17 @@ model BusinessUser {
 }
 
 model Customer {
-  id                String    @id @default(cuid())
+  id                String            @id @default(cuid())
   businessAccountId String
   name              String
   email             String?
   phone             String?
   reference         String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
   payments          Payment[]
   orders            Order[]
+  addresses         CustomerAddress[]
 
   businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
 
@@ -136,21 +143,21 @@ model Customer {
 
 // 2. Store payment information and its reconciliation schedule.
 model Payment {
-  id                String        @id @default(cuid())
-  businessAccountId String
-  customerId        String?
-  idempotencyKey    String
-  reference         String        @unique
-  amount            BigInt
-  currency          String        @default("NGN")
-  status            PaymentStatus @default(PENDING)
-  description       String?
-  authorizationUrl  String?
-  accessCode        String?
+  id                  String        @id @default(cuid())
+  businessAccountId   String
+  customerId          String?
+  idempotencyKey      String
+  reference           String        @unique
+  amount              BigInt
+  currency            String        @default("NGN")
+  status              PaymentStatus @default(PENDING)
+  description         String?
+  authorizationUrl    String?
+  accessCode          String?
   checkoutLockedUntil DateTime?
-   checkoutLockToken  String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  checkoutLockToken   String?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 
   // 2.1. Track how many reconciliation checks have been attempted.
   reconciliationAttempts Int @default(0)
@@ -331,13 +338,13 @@ model RiderVehicle {
 }
 
 model RiderKycSubmission {
-  id                  String               @id @default(cuid())
-  riderId             String
-  documentType        RiderKycDocumentType
-  documentStorageKey  String               @unique
-  status              RiderKycStatus       @default(PENDING)
-  submittedAt         DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
+  id                 String               @id @default(cuid())
+  riderId            String
+  documentType       RiderKycDocumentType
+  documentStorageKey String               @unique
+  status             RiderKycStatus       @default(PENDING)
+  submittedAt        DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
 
   reviews RiderKycReview[]
 
@@ -348,15 +355,42 @@ model RiderKycSubmission {
 }
 
 model RiderKycReview {
-  id           String                  @id @default(cuid())
+  id           String                 @id @default(cuid())
   submissionId String
   decision     RiderKycReviewDecision
   reviewedBy   String
   notes        String?
-  createdAt    DateTime                @default(now())
+  createdAt    DateTime               @default(now())
 
   submission RiderKycSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
 
   @@index([submissionId, createdAt])
   @@index([reviewedBy, createdAt])
+}
+
+model CustomerAddress {
+  id         String               @id @default(cuid())
+  customerId String
+  label      CustomerAddressLabel @default(OTHER)
+
+  recipientName  String
+  recipientPhone String
+
+  streetAddress String
+  city          String
+  state         String
+  landmark      String?
+
+  latitude  Decimal @db.Decimal(10, 7)
+  longitude Decimal @db.Decimal(10, 7)
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([customerId])
+  @@index([customerId, isDefault])
 }

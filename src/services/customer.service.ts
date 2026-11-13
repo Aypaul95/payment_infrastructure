@@ -138,6 +138,27 @@ export async function deleteCustomer(
         return "HAS_PAYMENTS" as const;
     }
 
+  const addressCount = await prisma.customerAddress.count({
+    where: {
+      customerId: customer.id,
+    },
+  });
+
+  if (addressCount > 0) {
+    return "HAS_ADDRESSES" as const;
+  }
+
+  const orderCount = await prisma.order.count({
+    where: {
+      customerId: customer.id,
+      businessAccountId,
+    },
+  });
+
+  if (orderCount > 0) {
+    return "HAS_ORDERS" as const;
+  }
+
     await prisma.customer.delete({
         where: {
             id: customer.id,
