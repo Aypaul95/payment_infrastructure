@@ -90,14 +90,20 @@ enum CustomerAddressLabel {
 }
 
 model BusinessAccount {
-  id           String   @id @default(cuid())
-  businessName String
-  email        String   @unique
-  phone        String?
-  currency     String   @default("NGN")
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  businessName         String
+  email                String   @unique
+  phone                String?
+  currency             String   @default("NGN")
+  pickupStreetAddress  String?
+  pickupCity           String?
+  pickupState          String?
+  pickupLandmark       String?
+  pickupLatitude       Decimal? @db.Decimal(10, 7)
+  pickupLongitude      Decimal? @db.Decimal(10, 7)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   users     BusinessUser[]
   customers Customer[]

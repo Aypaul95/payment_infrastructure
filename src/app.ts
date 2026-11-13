@@ -12,6 +12,7 @@ import { productRouter } from "./routes/product.routes";
 import { inventoryRouter } from "./routes/inventory.routes";
 import { orderRouter } from "./routes/order.routes";
 import { riderRouter } from "./routes/rider.routes";
+import { businessLocationRouter } from "./routes/business-location.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
 
 const app = express();
@@ -36,6 +37,7 @@ app.use(
 );
 
 app.use("/auth", authRouter);
+app.use("/business-accounts", businessLocationRouter);
 app.use("/riders", riderRouter);
 app.use("/customers", customerRouter);
 app.use("/products", productRouter);

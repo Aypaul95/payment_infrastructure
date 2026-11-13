@@ -112,6 +112,7 @@ try {
       "tests/product.integration.test.mts",
       "tests/inventory.integration.test.mts",
       "tests/customers.integration.test.mts",
+      "tests/business-location.integration.test.mts",
       "tests/orders.integration.test.mts",
       "tests/riders.integration.test.mts",
     ],
