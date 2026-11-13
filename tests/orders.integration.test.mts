@@ -39,6 +39,9 @@ let secondBusinessCustomerId = "";
 let server: ReturnType<typeof app.listen>;
 let baseUrl = "";
 let checkoutCustomerId = "";
+let customerAddressId = "";
+let checkoutCustomerAddressId = "";
+let secondBusinessCustomerAddressId = "";
 
 const app = express();
 app.use(express.json());
@@ -181,18 +184,47 @@ async function createTestProduct(
   return product;
 }
 
+async function createTestCustomerAddress(customerId: string) {
+  return prisma.customerAddress.create({
+    data: {
+      customerId,
+      label: "HOME",
+      recipientName: "Integration Test Recipient",
+      recipientPhone: "08012345678",
+      streetAddress: "12 Test Street",
+      city: "Ilorin",
+      state: "Kwara",
+      latitude: -8.4966,
+      longitude: 4.5421,
+      isDefault: true,
+    },
+  });
+}
+
 function createOrderPayload(
   productId: string,
   options: {
     idempotencyKey?: string;
     customerId?: string;
+    customerAddressId?: string;
     quantity?: number;
     discount?: string;
   } = {},
 ) {
+  const selectedCustomerId = options.customerId ?? customerId;
+
+  const selectedAddressId =
+    options.customerAddressId ??
+    (selectedCustomerId === checkoutCustomerId
+      ? checkoutCustomerAddressId
+      : selectedCustomerId === secondBusinessCustomerId
+        ? secondBusinessCustomerAddressId
+        : customerAddressId);
+
   return {
     idempotencyKey: options.idempotencyKey ?? randomUUID(),
-    customerId: options.customerId ?? customerId,
+    customerId: selectedCustomerId,
+    customerAddressId: selectedAddressId,
     items: [
       {
         productId,
@@ -255,6 +287,21 @@ before(async () => {
   });
 
   secondBusinessCustomerId = secondCustomer.id;
+
+  const firstCustomerAddress =
+    await createTestCustomerAddress(customerId);
+
+  customerAddressId = firstCustomerAddress.id;
+
+  const checkoutCustomerAddress =
+    await createTestCustomerAddress(checkoutCustomerId);
+
+  checkoutCustomerAddressId = checkoutCustomerAddress.id;
+
+  const secondCustomerAddress =
+    await createTestCustomerAddress(secondBusinessCustomerId);
+
+  secondBusinessCustomerAddressId = secondCustomerAddress.id;
 
   server = app.listen(0, "127.0.0.1");
 
@@ -355,6 +402,14 @@ after(async () => {
     await prisma.product.deleteMany({
       where: {
         businessAccountId: { in: businessIds },
+      },
+    });
+
+    await prisma.customerAddress.deleteMany({
+      where: {
+        customer: {
+          businessAccountId: { in: businessIds },
+        },
       },
     });
 
@@ -542,6 +597,7 @@ test("rolls back all stock reservations when one product has insufficient stock"
     const response = await createOrderRequest({
         idempotencyKey,
         customerId,
+        customerAddressId,
         items: [
             { productId: firstProduct.id, quantity: 2 },
             { productId: secondProduct.id, quantity: 1 },

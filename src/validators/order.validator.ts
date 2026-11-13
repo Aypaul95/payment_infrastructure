@@ -10,6 +10,11 @@ export const createOrderSchema = z.object({
 
   customerId: z.string().trim().min(1, "Customer is required."),
 
+  customerAddressId: z
+    .string()
+    .trim()
+    .min(1, "Delivery address is required."),
+
   items: z
     .array(
       z.object({

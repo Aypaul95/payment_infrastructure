@@ -28,6 +28,7 @@ function normalizeItems(items: OrderRequestItem[]) {
 function isSameOrderRequest(
   existing: {
     customerId: string;
+    customerAddressId: string;
     discount: bigint;
     items: { productId: string; quantity: number }[];
   },
@@ -38,6 +39,7 @@ function isSameOrderRequest(
 
   return (
     existing.customerId === input.customerId &&
+    existing.customerAddressId === input.customerAddressId &&
     existing.discount === BigInt(input.discount) &&
     existingItems.length === requestedItems.length &&
     existingItems.every(
@@ -183,6 +185,16 @@ export async function createOrder(
           if (!customer) {
             throw new Error("CUSTOMER_NOT_FOUND");
           }
+          const customerAddress = await tx.customerAddress.findFirst({
+            where: {
+              id: input.customerAddressId,
+              customerId: customer.id,
+            },
+          });
+
+          if (!customerAddress) {
+            throw new Error("CUSTOMER_ADDRESS_NOT_FOUND");
+          }
 
           const products = await tx.product.findMany({
             where: {
@@ -273,6 +285,15 @@ export async function createOrder(
             data: {
               businessAccountId,
               customerId: customer.id,
+              customerAddressId: customerAddress.id,
+              deliveryRecipientName: customerAddress.recipientName,
+              deliveryRecipientPhone: customerAddress.recipientPhone,
+              deliveryStreetAddress: customerAddress.streetAddress,
+              deliveryCity: customerAddress.city,
+              deliveryState: customerAddress.state,
+              deliveryLandmark: customerAddress.landmark,
+              deliveryLatitude: customerAddress.latitude,
+              deliveryLongitude: customerAddress.longitude,
               orderNumber: `ORD-${randomUUID()}`,
               idempotencyKey: input.idempotencyKey,
               subtotal,
