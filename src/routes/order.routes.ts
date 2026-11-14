@@ -6,6 +6,7 @@ import {
   getOrderById,
   listOrders,
 } from "../services/order.service";
+import { requestDelivery } from "../services/delivery.service";
 import { createOrderSchema } from "../validators/order.validator";
 
 export const orderRouter = Router();
@@ -108,6 +109,55 @@ orderRouter.get("/", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to retrieve orders.",
+    });
+  }
+});
+
+orderRouter.post("/:orderId/delivery", async (req, res) => {
+  try {
+    const delivery = await requestDelivery(
+      req.auth!.businessAccountId,
+      req.params.orderId,
+      req.auth!.userId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Delivery request processed successfully.",
+      data: delivery,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      const errors: Record<string, { status: number; message: string }> = {
+        ORDER_NOT_FOUND: {
+          status: 404,
+          message: "Order not found.",
+        },
+        ORDER_NOT_READY_FOR_DELIVERY: {
+          status: 409,
+          message: "Order is not ready for delivery.",
+        },
+        BUSINESS_PICKUP_LOCATION_INCOMPLETE: {
+          status: 409,
+          message: "Complete the business pickup location before requesting delivery.",
+        },
+      };
+
+      const knownError = errors[error.message];
+
+      if (knownError) {
+        return res.status(knownError.status).json({
+          success: false,
+          message: knownError.message,
+        });
+      }
+    }
+
+    console.error("Failed to request delivery:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to request delivery.",
     });
   }
 });

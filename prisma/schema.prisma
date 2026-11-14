@@ -89,21 +89,38 @@ enum CustomerAddressLabel {
   OTHER
 }
 
+enum DeliveryStatus {
+  REQUESTED
+  ASSIGNED
+  ACCEPTED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+enum DeliveryActorType {
+  RIDER
+  BUSINESS_USER
+  ADMIN
+  SYSTEM
+}
+
 model BusinessAccount {
-  id                   String   @id @default(cuid())
-  businessName         String
-  email                String   @unique
-  phone                String?
-  currency             String   @default("NGN")
-  pickupStreetAddress  String?
-  pickupCity           String?
-  pickupState          String?
-  pickupLandmark       String?
-  pickupLatitude       Decimal? @db.Decimal(10, 7)
-  pickupLongitude      Decimal? @db.Decimal(10, 7)
-  isActive             Boolean  @default(true)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  businessName        String
+  email               String   @unique
+  phone               String?
+  currency            String   @default("NGN")
+  pickupStreetAddress String?
+  pickupCity          String?
+  pickupState         String?
+  pickupLandmark      String?
+  pickupLatitude      Decimal? @db.Decimal(10, 7)
+  pickupLongitude     Decimal? @db.Decimal(10, 7)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   users     BusinessUser[]
   customers Customer[]
@@ -265,39 +282,116 @@ model InventoryMovement {
 }
 
 model Order {
-  id                String      @id @default(cuid())
-  businessAccountId String
-  customerId        String
-    // Original saved address reference; intentionally not a foreign key.
-  customerAddressId       String
-  deliveryRecipientName   String
-  deliveryRecipientPhone  String
-  deliveryStreetAddress   String
-  deliveryCity             String
-  deliveryState            String
-  deliveryLandmark         String?
-  deliveryLatitude         Decimal     @db.Decimal(10, 7)
-  deliveryLongitude        Decimal     @db.Decimal(10, 7)
-  orderNumber       String
-  idempotencyKey    String
-  status            OrderStatus @default(PENDING_PAYMENT)
-  subtotal          BigInt
-  discount          BigInt      @default(0)
-  total             BigInt
-  currency          String      @default("NGN")
-  notes             String?
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  id                     String      @id @default(cuid())
+  businessAccountId      String
+  customerId             String
+  // Original saved address reference; intentionally not a foreign key.
+  customerAddressId      String
+  deliveryRecipientName  String
+  deliveryRecipientPhone String
+  deliveryStreetAddress  String
+  deliveryCity           String
+  deliveryState          String
+  deliveryLandmark       String?
+  deliveryLatitude       Decimal     @db.Decimal(10, 7)
+  deliveryLongitude      Decimal     @db.Decimal(10, 7)
+  orderNumber            String
+  idempotencyKey         String
+  status                 OrderStatus @default(PENDING_PAYMENT)
+  subtotal               BigInt
+  discount               BigInt      @default(0)
+  total                  BigInt
+  currency               String      @default("NGN")
+  notes                  String?
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
 
   businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
   customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
   items           OrderItem[]
   payments        Payment[]
+  delivery        Delivery?
 
   @@unique([businessAccountId, orderNumber])
   @@unique([businessAccountId, idempotencyKey])
   @@index([businessAccountId, status])
   @@index([customerId, createdAt])
+}
+
+model Delivery {
+  id              String         @id @default(cuid())
+  orderId         String         @unique
+  assignedRiderId String?
+  status          DeliveryStatus @default(REQUESTED)
+
+  // Pickup location snapshot
+  pickupStreetAddress String
+  pickupCity          String
+  pickupState         String
+  pickupLandmark      String?
+  pickupLatitude      Decimal @db.Decimal(10, 7)
+  pickupLongitude     Decimal @db.Decimal(10, 7)
+
+  // Drop-off snapshot
+  dropoffRecipientName  String
+  dropoffRecipientPhone String
+  dropoffStreetAddress  String
+  dropoffCity           String
+  dropoffState          String
+  dropoffLandmark       String?
+  dropoffLatitude       Decimal @db.Decimal(10, 7)
+  dropoffLongitude      Decimal @db.Decimal(10, 7)
+
+  requestedAt DateTime  @default(now())
+  assignedAt  DateTime?
+  acceptedAt  DateTime?
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+  cancelledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order         Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  assignedRider Rider? @relation(fields: [assignedRiderId], references: [id], onDelete: Restrict)
+
+  assignmentHistory DeliveryAssignmentHistory[]
+  statusHistory     DeliveryStatusHistory[]
+
+  @@index([assignedRiderId, status])
+  @@index([status, requestedAt])
+}
+
+model DeliveryAssignmentHistory {
+  id              String            @id @default(cuid())
+  deliveryId      String
+  previousRiderId String?
+  newRiderId      String
+  assignedById    String
+  assignedByType  DeliveryActorType
+  reason          String?
+  createdAt       DateTime          @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+
+  @@index([deliveryId, createdAt])
+  @@index([newRiderId, createdAt])
+}
+
+model DeliveryStatusHistory {
+  id         String            @id @default(cuid())
+  deliveryId String
+  fromStatus DeliveryStatus?
+  toStatus   DeliveryStatus
+  actorId    String
+  actorType  DeliveryActorType
+  notes      String?
+  createdAt  DateTime          @default(now())
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+
+  @@index([deliveryId, createdAt])
+  @@index([actorId, createdAt])
 }
 
 model OrderItem {
@@ -331,6 +425,7 @@ model Rider {
 
   vehicles       RiderVehicle[]
   kycSubmissions RiderKycSubmission[]
+  deliveries     Delivery[]
 
   @@index([approvalStatus, isActive])
 }

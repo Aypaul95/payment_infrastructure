@@ -154,6 +154,20 @@ async function createTestBusiness(name: string) {
   };
 }
 
+async function setBusinessPickupLocation(accountId: string) {
+  await prisma.businessAccount.update({
+    where: { id: accountId },
+    data: {
+      pickupStreetAddress: "15 Test Market Road",
+      pickupCity: "Ilorin",
+      pickupState: "Kwara",
+      pickupLandmark: "Near Central Market",
+      pickupLatitude: -8.4966,
+      pickupLongitude: 4.5421,
+    },
+  });
+}
+
 async function createTestProduct(
   accountId = businessAccountId,
   options: {
@@ -244,6 +258,27 @@ async function createOrderRequest(
     headers,
     body: JSON.stringify(payload),
   });
+}
+
+async function createReadyOrder(productId: string) {
+  const response = await createOrderRequest(
+    createOrderPayload(productId),
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to create test order: ${await response.text()}`,
+    );
+  }
+
+  const body = await response.json();
+
+  await prisma.order.update({
+    where: { id: body.data.id },
+    data: { status: "READY_FOR_DELIVERY" },
+  });
+
+  return body.data;
 }
 
 before(async () => {
@@ -370,6 +405,28 @@ after(async () => {
     }
 
     if (orderIds.length > 0) {
+      await prisma.deliveryStatusHistory.deleteMany({
+        where: {
+          delivery: {
+            orderId: { in: orderIds },
+          },
+        },
+      });
+
+      await prisma.deliveryAssignmentHistory.deleteMany({
+        where: {
+          delivery: {
+            orderId: { in: orderIds },
+          },
+        },
+      });
+
+      await prisma.delivery.deleteMany({
+        where: {
+          orderId: { in: orderIds },
+        },
+      });
+
       await prisma.orderItem.deleteMany({
         where: {
           orderId: { in: orderIds },
@@ -1232,4 +1289,200 @@ test("does not allow one business to initialize checkout for another business's 
     mockPaystackInitializationCalls.size,
     callsBeforeRequest,
   );
+});
+
+test("requests delivery for an order ready for delivery", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(
+    body.message,
+    "Delivery request processed successfully.",
+  );
+
+  assert.equal(body.data.orderId, order.id);
+  assert.equal(body.data.status, "REQUESTED");
+
+  assert.equal(
+    body.data.pickupStreetAddress,
+    "15 Test Market Road",
+  );
+  assert.equal(body.data.pickupCity, "Ilorin");
+  assert.equal(body.data.pickupState, "Kwara");
+
+  assert.equal(
+    body.data.dropoffStreetAddress,
+    "12 Test Street",
+  );
+  assert.equal(body.data.dropoffCity, "Ilorin");
+  assert.equal(body.data.dropoffState, "Kwara");
+
+  assert.equal(body.data.statusHistory.length, 1);
+  assert.equal(
+    body.data.statusHistory[0].toStatus,
+    "REQUESTED",
+  );
+  assert.equal(
+    body.data.statusHistory[0].actorType,
+    "BUSINESS_USER",
+  );
+});
+
+test("returns the existing delivery when requested again", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+
+  const requestDelivery = () =>
+    fetch(`${baseUrl}/orders/${order.id}/delivery`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+
+  const firstResponse = await requestDelivery();
+  const firstBody = await firstResponse.json();
+
+  const secondResponse = await requestDelivery();
+  const secondBody = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+
+  assert.equal(firstBody.data.id, secondBody.data.id);
+  assert.equal(firstBody.data.orderId, secondBody.data.orderId);
+
+  const deliveries = await prisma.delivery.findMany({
+    where: { orderId: order.id },
+  });
+
+  assert.equal(deliveries.length, 1);
+
+  const historyCount = await prisma.deliveryStatusHistory.count({
+    where: {
+      deliveryId: firstBody.data.id,
+    },
+  });
+
+  assert.equal(historyCount, 1);
+});
+
+test("does not allow a business to request delivery for another business's order", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(
+        secondBusinessUserId,
+        secondBusinessAccountId,
+      ),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Order not found.");
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.equal(delivery, null);
+});
+
+test("rejects delivery requests for orders not ready for delivery", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+
+  const response = await createOrderRequest(
+    createOrderPayload(product.id),
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+
+  const deliveryResponse = await fetch(
+    `${baseUrl}/orders/${body.data.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  const deliveryBody = await deliveryResponse.json();
+
+  assert.equal(deliveryResponse.status, 409);
+  assert.equal(deliveryBody.success, false);
+  assert.equal(
+    deliveryBody.message,
+    "Order is not ready for delivery.",
+  );
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: body.data.id },
+  });
+
+  assert.equal(delivery, null);
+});
+
+test("rejects delivery requests when business pickup location is incomplete", async () => {
+  const product = await createTestProduct();
+  await prisma.businessAccount.update({
+    where: { id: businessAccountId },
+    data: {
+      pickupStreetAddress: null,
+      pickupCity: null,
+      pickupState: null,
+      pickupLandmark: null,
+      pickupLatitude: null,
+      pickupLongitude: null,
+    },
+  });
+  const order = await createReadyOrder(product.id);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Complete the business pickup location before requesting delivery.",
+  );
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.equal(delivery, null);
 });
