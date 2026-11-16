@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -42,6 +41,7 @@ let checkoutCustomerId = "";
 let customerAddressId = "";
 let checkoutCustomerAddressId = "";
 let secondBusinessCustomerAddressId = "";
+const testRiderIds: string[] = [];
 
 const app = express();
 app.use(express.json());
@@ -77,7 +77,7 @@ function delayMockPaystackInitialization() {
   return {
     started,
     release: () => {
-      mockPaystackInitializationDelay = async () => { };
+      mockPaystackInitializationDelay = async () => {};
       release();
     },
   };
@@ -104,11 +104,15 @@ app.post("/transaction/initialize", async (req, res) => {
   });
 });
 
-function createToken(userId: string, accountId: string) {
+function createToken(
+  userId: string,
+  accountId: string,
+  role: "OWNER" | "ADMIN" | "STAFF" = "OWNER",
+) {
   return jwt.sign(
     {
       businessAccountId: accountId,
-      role: "OWNER",
+      role,
     },
     jwtSecret!,
     {
@@ -120,10 +124,7 @@ function createToken(userId: string, accountId: string) {
   );
 }
 
-function authHeaders(
-  userId = businessUserId,
-  accountId = businessAccountId,
-) {
+function authHeaders(userId = businessUserId, accountId = businessAccountId) {
   return {
     Authorization: `Bearer ${createToken(userId, accountId)}`,
     "Content-Type": "application/json",
@@ -166,6 +167,27 @@ async function setBusinessPickupLocation(accountId: string) {
       pickupLongitude: 4.5421,
     },
   });
+}
+
+async function createTestRider(
+  options: {
+    approvalStatus?: "PENDING" | "APPROVED" | "REJECTED";
+    isActive?: boolean;
+  } = {},
+) {
+  const rider = await prisma.rider.create({
+    data: {
+      fullName: "Delivery Assignment Test Rider",
+      phone: `+23480${String(Date.now()).slice(-8)}${String(Math.floor(Math.random() * 10))}`,
+      passwordHash: "test-only-password-hash",
+      approvalStatus: options.approvalStatus ?? "APPROVED",
+      isActive: options.isActive ?? true,
+    },
+  });
+
+  testRiderIds.push(rider.id);
+
+  return rider;
 }
 
 async function createTestProduct(
@@ -249,10 +271,7 @@ function createOrderPayload(
   };
 }
 
-async function createOrderRequest(
-  payload: unknown,
-  headers = authHeaders(),
-) {
+async function createOrderRequest(payload: unknown, headers = authHeaders()) {
   return fetch(`${baseUrl}/orders`, {
     method: "POST",
     headers,
@@ -261,14 +280,10 @@ async function createOrderRequest(
 }
 
 async function createReadyOrder(productId: string) {
-  const response = await createOrderRequest(
-    createOrderPayload(productId),
-  );
+  const response = await createOrderRequest(createOrderPayload(productId));
 
   if (!response.ok) {
-    throw new Error(
-      `Failed to create test order: ${await response.text()}`,
-    );
+    throw new Error(`Failed to create test order: ${await response.text()}`);
   }
 
   const body = await response.json();
@@ -323,8 +338,7 @@ before(async () => {
 
   secondBusinessCustomerId = secondCustomer.id;
 
-  const firstCustomerAddress =
-    await createTestCustomerAddress(customerId);
+  const firstCustomerAddress = await createTestCustomerAddress(customerId);
 
   customerAddressId = firstCustomerAddress.id;
 
@@ -333,8 +347,9 @@ before(async () => {
 
   checkoutCustomerAddressId = checkoutCustomerAddress.id;
 
-  const secondCustomerAddress =
-    await createTestCustomerAddress(secondBusinessCustomerId);
+  const secondCustomerAddress = await createTestCustomerAddress(
+    secondBusinessCustomerId,
+  );
 
   secondBusinessCustomerAddressId = secondCustomerAddress.id;
 
@@ -366,10 +381,9 @@ after(async () => {
     });
   }
 
-  const businessIds = [
-    businessAccountId,
-    secondBusinessAccountId,
-  ].filter(Boolean);
+  const businessIds = [businessAccountId, secondBusinessAccountId].filter(
+    Boolean,
+  );
 
   if (businessIds.length > 0) {
     const orders = await prisma.order.findMany({
@@ -485,6 +499,14 @@ after(async () => {
     await prisma.businessAccount.deleteMany({
       where: {
         id: { in: businessIds },
+      },
+    });
+  }
+
+  if (testRiderIds.length > 0) {
+    await prisma.rider.deleteMany({
+      where: {
+        id: { in: testRiderIds },
       },
     });
   }
@@ -641,26 +663,26 @@ test("rejects an order when available stock is insufficient", async () => {
 });
 
 test("rolls back all stock reservations when one product has insufficient stock", async () => {
-    const firstProduct = await createTestProduct(businessAccountId, {
-        quantity: 10,
-    });
+  const firstProduct = await createTestProduct(businessAccountId, {
+    quantity: 10,
+  });
 
-    const secondProduct = await createTestProduct(businessAccountId, {
-        quantity: 0,
-    });
+  const secondProduct = await createTestProduct(businessAccountId, {
+    quantity: 0,
+  });
 
-    const idempotencyKey = `ROLLBACK-${randomUUID()}`;
+  const idempotencyKey = `ROLLBACK-${randomUUID()}`;
 
-    const response = await createOrderRequest({
-        idempotencyKey,
-        customerId,
-        customerAddressId,
-        items: [
-            { productId: firstProduct.id, quantity: 2 },
-            { productId: secondProduct.id, quantity: 1 },
-        ],
-        discount: "0",
-    });
+  const response = await createOrderRequest({
+    idempotencyKey,
+    customerId,
+    customerAddressId,
+    items: [
+      { productId: firstProduct.id, quantity: 2 },
+      { productId: secondProduct.id, quantity: 1 },
+    ],
+    discount: "0",
+  });
 
   const body = await response.json();
 
@@ -681,14 +703,14 @@ test("rolls back all stock reservations when one product has insufficient stock"
   assert.equal(firstInventory.reservedQuantity, 0);
   assert.equal(secondInventory.reservedQuantity, 0);
 
-    const orderCount = await prisma.order.count({
-        where: {
-            businessAccountId,
-            idempotencyKey,
-        },
-    });
+  const orderCount = await prisma.order.count({
+    where: {
+      businessAccountId,
+      idempotencyKey,
+    },
+  });
 
-    assert.equal(orderCount, 0);
+  assert.equal(orderCount, 0);
 });
 
 test("rejects a customer belonging to another business", async () => {
@@ -710,9 +732,7 @@ test("rejects a customer belonging to another business", async () => {
 test("rejects a product belonging to another business", async () => {
   const product = await createTestProduct(secondBusinessAccountId);
 
-  const response = await createOrderRequest(
-    createOrderPayload(product.id),
-  );
+  const response = await createOrderRequest(createOrderPayload(product.id));
 
   const body = await response.json();
 
@@ -729,9 +749,7 @@ test("rejects inactive products", async () => {
     isActive: false,
   });
 
-  const response = await createOrderRequest(
-    createOrderPayload(product.id),
-  );
+  const response = await createOrderRequest(createOrderPayload(product.id));
 
   const body = await response.json();
 
@@ -786,9 +804,7 @@ test("lists orders belonging to the authenticated business", async () => {
   assert.equal(body.success, true);
 
   assert.ok(
-    body.data.some(
-      (order: { id: string }) => order.id === createdBody.data.id,
-    ),
+    body.data.some((order: { id: string }) => order.id === createdBody.data.id),
   );
 });
 
@@ -801,12 +817,9 @@ test("retrieves an order belonging to the authenticated business", async () => {
 
   const createdBody = await createResponse.json();
 
-  const response = await fetch(
-    `${baseUrl}/orders/${createdBody.data.id}`,
-    {
-      headers: authHeaders(),
-    },
-  );
+  const response = await fetch(`${baseUrl}/orders/${createdBody.data.id}`, {
+    headers: authHeaders(),
+  });
 
   const body = await response.json();
 
@@ -832,12 +845,9 @@ test("does not expose another business's order", async () => {
 
   assert.equal(createResponse.status, 201);
 
-  const response = await fetch(
-    `${baseUrl}/orders/${createdBody.data.id}`,
-    {
-      headers: authHeaders(),
-    },
-  );
+  const response = await fetch(`${baseUrl}/orders/${createdBody.data.id}`, {
+    headers: authHeaders(),
+  });
 
   const body = await response.json();
 
@@ -907,15 +917,12 @@ test("initializes Paystack checkout for an existing order", async () => {
     checkoutBody.data.authorizationUrl,
     "https://checkout.example.com/mock",
   );
-  assert.equal(
-    checkoutBody.data.accessCode,
-    "mock_access_code",
-  );
+  assert.equal(checkoutBody.data.accessCode, "mock_access_code");
 
   assert.equal(
-  mockPaystackInitializationCalls.get(checkoutBody.data.reference),
-  1,
-);
+    mockPaystackInitializationCalls.get(checkoutBody.data.reference),
+    1,
+  );
 });
 test("rejects checkout when the order has already been paid", async () => {
   const product = await createTestProduct();
@@ -969,15 +976,9 @@ test("rejects checkout when the order has already been paid", async () => {
 
   assert.equal(response.status, 409);
   assert.equal(body.success, false);
-  assert.equal(
-  body.message,
-  "This order is not awaiting payment.",
-);
+  assert.equal(body.message, "This order is not awaiting payment.");
 
-  assert.equal(
-    mockPaystackInitializationCalls.get(payment.reference) ?? 0,
-    0,
-  );
+  assert.equal(mockPaystackInitializationCalls.get(payment.reference) ?? 0, 0);
 
   assert.equal(payment.status, "SUCCESSFUL");
 });
@@ -998,14 +999,11 @@ test("reuses an existing Paystack checkout session for the same idempotency key"
   const idempotencyKey = randomUUID();
 
   async function initializeCheckout() {
-    return fetch(
-      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ idempotencyKey }),
-      },
-    );
+    return fetch(`${baseUrl}/payments/orders/${orderBody.data.id}/checkout`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ idempotencyKey }),
+    });
   }
 
   const firstResponse = await initializeCheckout();
@@ -1020,25 +1018,16 @@ test("reuses an existing Paystack checkout session for the same idempotency key"
   assert.equal(secondResponse.status, 200);
   assert.equal(secondBody.success, true);
 
-  assert.equal(
-    secondBody.data.paymentId,
-    firstBody.data.paymentId,
-  );
+  assert.equal(secondBody.data.paymentId, firstBody.data.paymentId);
 
-  assert.equal(
-    secondBody.data.reference,
-    firstBody.data.reference,
-  );
+  assert.equal(secondBody.data.reference, firstBody.data.reference);
 
   assert.equal(
     secondBody.data.authorizationUrl,
     firstBody.data.authorizationUrl,
   );
 
-  assert.equal(
-    secondBody.data.accessCode,
-    firstBody.data.accessCode,
-  );
+  assert.equal(secondBody.data.accessCode, firstBody.data.accessCode);
 
   assert.equal(
     mockPaystackInitializationCalls.get(firstBody.data.reference),
@@ -1062,14 +1051,11 @@ test("handles concurrent checkout requests with the same idempotency key", async
   const idempotencyKey = randomUUID();
 
   async function initializeCheckout() {
-    return fetch(
-      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ idempotencyKey }),
-      },
-    );
+    return fetch(`${baseUrl}/payments/orders/${orderBody.data.id}/checkout`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ idempotencyKey }),
+    });
   }
 
   const [firstResponse, secondResponse] = await Promise.all([
@@ -1082,13 +1068,9 @@ test("handles concurrent checkout requests with the same idempotency key", async
     secondResponse.json(),
   ]);
 
-  assert.ok(
-    [200, 409].includes(firstResponse.status),
-  );
+  assert.ok([200, 409].includes(firstResponse.status));
 
-  assert.ok(
-    [200, 409].includes(secondResponse.status),
-  );
+  assert.ok([200, 409].includes(secondResponse.status));
 
   const successfulBodies = [
     { status: firstResponse.status, body: firstBody },
@@ -1130,14 +1112,11 @@ test("prevents an expired checkout lock owner from overwriting a newer session",
   const delayed = delayMockPaystackInitialization();
 
   async function initializeCheckout() {
-    return fetch(
-      `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ idempotencyKey }),
-      },
-    );
+    return fetch(`${baseUrl}/payments/orders/${orderBody.data.id}/checkout`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ idempotencyKey }),
+    });
   }
 
   const firstRequest = initializeCheckout();
@@ -1174,7 +1153,10 @@ test("prevents an expired checkout lock owner from overwriting a newer session",
     const firstBody = await firstResponse.json();
 
     assert.equal(firstResponse.status, 409);
-    assert.equal(firstBody.message, "Checkout initialization ownership was lost. Please retry checkout.");
+    assert.equal(
+      firstBody.message,
+      "Checkout initialization ownership was lost. Please retry checkout.",
+    );
 
     const savedPayment = await prisma.payment.findUniqueOrThrow({
       where: { id: payment.id },
@@ -1185,10 +1167,7 @@ test("prevents an expired checkout lock owner from overwriting a newer session",
       secondBody.data.authorizationUrl,
     );
 
-    assert.equal(
-      savedPayment.accessCode,
-      secondBody.data.accessCode,
-    );
+    assert.equal(savedPayment.accessCode, secondBody.data.accessCode);
 
     assert.equal(savedPayment.checkoutLockToken, null);
     assert.equal(savedPayment.checkoutLockedUntil, null);
@@ -1223,25 +1202,18 @@ test("rejects reuse of a checkout idempotency key for another order", async () =
   const idempotencyKey = randomUUID();
 
   async function initializeCheckout(orderId: string) {
-    return fetch(
-      `${baseUrl}/payments/orders/${orderId}/checkout`,
-      {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ idempotencyKey }),
-      },
-    );
+    return fetch(`${baseUrl}/payments/orders/${orderId}/checkout`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ idempotencyKey }),
+    });
   }
 
-  const firstResponse = await initializeCheckout(
-    firstOrderBody.data.id,
-  );
+  const firstResponse = await initializeCheckout(firstOrderBody.data.id);
 
   assert.equal(firstResponse.status, 200);
 
-  const secondResponse = await initializeCheckout(
-    secondOrderBody.data.id,
-  );
+  const secondResponse = await initializeCheckout(secondOrderBody.data.id);
 
   const secondBody = await secondResponse.json();
 
@@ -1266,7 +1238,7 @@ test("does not allow one business to initialize checkout for another business's 
   const orderBody = await orderResponse.json();
 
   assert.equal(orderResponse.status, 201);
- const callsBeforeRequest = mockPaystackInitializationCalls.size;
+  const callsBeforeRequest = mockPaystackInitializationCalls.size;
 
   const response = await fetch(
     `${baseUrl}/payments/orders/${orderBody.data.id}/checkout`,
@@ -1285,10 +1257,7 @@ test("does not allow one business to initialize checkout for another business's 
   assert.equal(body.success, false);
   assert.equal(body.message, "Order not found.");
 
-  assert.equal(
-    mockPaystackInitializationCalls.size,
-    callsBeforeRequest,
-  );
+  assert.equal(mockPaystackInitializationCalls.size, callsBeforeRequest);
 });
 
 test("requests delivery for an order ready for delivery", async () => {
@@ -1297,49 +1266,31 @@ test("requests delivery for an order ready for delivery", async () => {
   const product = await createTestProduct();
   const order = await createReadyOrder(product.id);
 
-  const response = await fetch(
-    `${baseUrl}/orders/${order.id}/delivery`,
-    {
-      method: "POST",
-      headers: authHeaders(),
-    },
-  );
+  const response = await fetch(`${baseUrl}/orders/${order.id}/delivery`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
 
   const body = await response.json();
 
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
-  assert.equal(
-    body.message,
-    "Delivery request processed successfully.",
-  );
+  assert.equal(body.message, "Delivery request processed successfully.");
 
   assert.equal(body.data.orderId, order.id);
   assert.equal(body.data.status, "REQUESTED");
 
-  assert.equal(
-    body.data.pickupStreetAddress,
-    "15 Test Market Road",
-  );
+  assert.equal(body.data.pickupStreetAddress, "15 Test Market Road");
   assert.equal(body.data.pickupCity, "Ilorin");
   assert.equal(body.data.pickupState, "Kwara");
 
-  assert.equal(
-    body.data.dropoffStreetAddress,
-    "12 Test Street",
-  );
+  assert.equal(body.data.dropoffStreetAddress, "12 Test Street");
   assert.equal(body.data.dropoffCity, "Ilorin");
   assert.equal(body.data.dropoffState, "Kwara");
 
   assert.equal(body.data.statusHistory.length, 1);
-  assert.equal(
-    body.data.statusHistory[0].toStatus,
-    "REQUESTED",
-  );
-  assert.equal(
-    body.data.statusHistory[0].actorType,
-    "BUSINESS_USER",
-  );
+  assert.equal(body.data.statusHistory[0].toStatus, "REQUESTED");
+  assert.equal(body.data.statusHistory[0].actorType, "BUSINESS_USER");
 });
 
 test("returns the existing delivery when requested again", async () => {
@@ -1387,16 +1338,10 @@ test("does not allow a business to request delivery for another business's order
   const product = await createTestProduct();
   const order = await createReadyOrder(product.id);
 
-  const response = await fetch(
-    `${baseUrl}/orders/${order.id}/delivery`,
-    {
-      method: "POST",
-      headers: authHeaders(
-        secondBusinessUserId,
-        secondBusinessAccountId,
-      ),
-    },
-  );
+  const response = await fetch(`${baseUrl}/orders/${order.id}/delivery`, {
+    method: "POST",
+    headers: authHeaders(secondBusinessUserId, secondBusinessAccountId),
+  });
 
   const body = await response.json();
 
@@ -1416,9 +1361,7 @@ test("rejects delivery requests for orders not ready for delivery", async () => 
 
   const product = await createTestProduct();
 
-  const response = await createOrderRequest(
-    createOrderPayload(product.id),
-  );
+  const response = await createOrderRequest(createOrderPayload(product.id));
 
   const body = await response.json();
 
@@ -1436,16 +1379,398 @@ test("rejects delivery requests for orders not ready for delivery", async () => 
 
   assert.equal(deliveryResponse.status, 409);
   assert.equal(deliveryBody.success, false);
-  assert.equal(
-    deliveryBody.message,
-    "Order is not ready for delivery.",
-  );
+  assert.equal(deliveryBody.message, "Order is not ready for delivery.");
 
   const delivery = await prisma.delivery.findUnique({
     where: { orderId: body.data.id },
   });
 
   assert.equal(delivery, null);
+});
+
+test("allows an owner to assign an approved rider to a requested delivery", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const assignmentResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        riderId: rider.id,
+        reason: "Assigning an available rider.",
+      }),
+    },
+  );
+
+  const assignmentBody = await assignmentResponse.json();
+
+  assert.equal(assignmentResponse.status, 200);
+  assert.equal(assignmentBody.success, true);
+  assert.equal(assignmentBody.message, "Rider assigned successfully.");
+
+  assert.equal(assignmentBody.data.orderId, order.id);
+  assert.equal(assignmentBody.data.status, "ASSIGNED");
+  assert.equal(assignmentBody.data.assignedRiderId, rider.id);
+
+  assert.equal(assignmentBody.data.assignmentHistory.length, 1);
+  assert.equal(assignmentBody.data.assignmentHistory[0].previousRiderId, null);
+  assert.equal(assignmentBody.data.assignmentHistory[0].newRiderId, rider.id);
+  assert.equal(
+    assignmentBody.data.assignmentHistory[0].assignedById,
+    businessUserId,
+  );
+  assert.equal(
+    assignmentBody.data.assignmentHistory[0].assignedByType,
+    "BUSINESS_USER",
+  );
+  assert.equal(
+    assignmentBody.data.assignmentHistory[0].reason,
+    "Assigning an available rider.",
+  );
+
+  assert.equal(assignmentBody.data.statusHistory.length, 2);
+  assert.equal(assignmentBody.data.statusHistory[1].fromStatus, "REQUESTED");
+  assert.equal(assignmentBody.data.statusHistory[1].toStatus, "ASSIGNED");
+  assert.equal(assignmentBody.data.statusHistory[1].actorType, "BUSINESS_USER");
+});
+
+test("allows an owner to reassign a delivery to another approved rider", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const firstRider = await createTestRider();
+  const secondRider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const firstAssignmentResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ riderId: firstRider.id }),
+    },
+  );
+
+  assert.equal(firstAssignmentResponse.status, 200);
+
+  const reassignmentResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        riderId: secondRider.id,
+        reason: "Reassigning to another available rider.",
+      }),
+    },
+  );
+
+  const reassignmentBody = await reassignmentResponse.json();
+
+  assert.equal(reassignmentResponse.status, 200);
+  assert.equal(reassignmentBody.success, true);
+  assert.equal(reassignmentBody.data.status, "ASSIGNED");
+  assert.equal(reassignmentBody.data.assignedRiderId, secondRider.id);
+
+  assert.equal(reassignmentBody.data.assignmentHistory.length, 2);
+  assert.equal(
+    reassignmentBody.data.assignmentHistory[1].previousRiderId,
+    firstRider.id,
+  );
+  assert.equal(
+    reassignmentBody.data.assignmentHistory[1].newRiderId,
+    secondRider.id,
+  );
+  assert.equal(
+    reassignmentBody.data.assignmentHistory[1].reason,
+    "Reassigning to another available rider.",
+  );
+
+  assert.equal(reassignmentBody.data.statusHistory.length, 2);
+});
+
+test("rejects assignment to a rider whose approval is pending", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider({
+    approvalStatus: "PENDING",
+  });
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ riderId: rider.id }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Rider is not approved or is inactive.");
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.ok(delivery);
+  assert.equal(delivery.status, "REQUESTED");
+  assert.equal(delivery.assignedRiderId, null);
+
+  const historyCount = await prisma.deliveryAssignmentHistory.count({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(historyCount, 0);
+});
+
+test("rejects assignment to an inactive approved rider", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider({
+    approvalStatus: "APPROVED",
+    isActive: false,
+  });
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ riderId: rider.id }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Rider is not approved or is inactive.");
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.ok(delivery);
+  assert.equal(delivery.status, "REQUESTED");
+  assert.equal(delivery.assignedRiderId, null);
+
+  const historyCount = await prisma.deliveryAssignmentHistory.count({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(historyCount, 0);
+});
+
+test("prevents a staff user from assigning a rider", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const staffUser = await prisma.businessUser.create({
+    data: {
+      businessAccountId,
+      fullName: "Order Integration Test Staff",
+      email: `${randomUUID()}@example.com`,
+      passwordHash: "integration-test-password-hash",
+      role: "STAFF",
+    },
+  });
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: {
+        ...authHeaders(staffUser.id, businessAccountId),
+        Authorization: `Bearer ${createToken(
+          staffUser.id,
+          businessAccountId,
+          "STAFF",
+        )}`,
+      },
+      body: JSON.stringify({ riderId: rider.id }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 403);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "You are not authorized to assign riders.");
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.ok(delivery);
+  assert.equal(delivery.status, "REQUESTED");
+  assert.equal(delivery.assignedRiderId, null);
+
+  const historyCount = await prisma.deliveryAssignmentHistory.count({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(historyCount, 0);
+});
+
+test("prevents another business from assigning a rider to a delivery", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const response = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(secondBusinessUserId, secondBusinessAccountId),
+      body: JSON.stringify({ riderId: rider.id }),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "Delivery not found.");
+
+  const delivery = await prisma.delivery.findUnique({
+    where: { orderId: order.id },
+  });
+
+  assert.ok(delivery);
+  assert.equal(delivery.status, "REQUESTED");
+  assert.equal(delivery.assignedRiderId, null);
+
+  const historyCount = await prisma.deliveryAssignmentHistory.count({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(historyCount, 0);
+});
+
+test("does not duplicate assignment history when the same rider is assigned again", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  assert.equal(requestResponse.status, 200);
+
+  const assignRider = () =>
+    fetch(`${baseUrl}/orders/${order.id}/delivery/assign`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ riderId: rider.id }),
+    });
+
+  const firstResponse = await assignRider();
+  const firstBody = await firstResponse.json();
+
+  const secondResponse = await assignRider();
+  const secondBody = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(secondResponse.status, 200);
+
+  assert.equal(firstBody.data.id, secondBody.data.id);
+  assert.equal(secondBody.data.assignedRiderId, rider.id);
+  assert.equal(secondBody.data.status, "ASSIGNED");
+
+  assert.equal(secondBody.data.assignmentHistory.length, 1);
+  assert.equal(secondBody.data.statusHistory.length, 2);
+
+  const assignmentHistoryCount = await prisma.deliveryAssignmentHistory.count({
+    where: {
+      deliveryId: secondBody.data.id,
+    },
+  });
+
+  assert.equal(assignmentHistoryCount, 1);
 });
 
 test("rejects delivery requests when business pickup location is incomplete", async () => {
@@ -1463,13 +1788,10 @@ test("rejects delivery requests when business pickup location is incomplete", as
   });
   const order = await createReadyOrder(product.id);
 
-  const response = await fetch(
-    `${baseUrl}/orders/${order.id}/delivery`,
-    {
-      method: "POST",
-      headers: authHeaders(),
-    },
-  );
+  const response = await fetch(`${baseUrl}/orders/${order.id}/delivery`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
 
   const body = await response.json();
 

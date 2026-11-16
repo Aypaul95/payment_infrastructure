@@ -1,4 +1,3 @@
-
 import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware";
 import {
@@ -6,8 +5,9 @@ import {
   getOrderById,
   listOrders,
 } from "../services/order.service";
-import { requestDelivery } from "../services/delivery.service";
+import { assignDelivery, requestDelivery } from "../services/delivery.service";
 import { createOrderSchema } from "../validators/order.validator";
+import { assignDeliverySchema } from "../validators/delivery.validator";
 
 export const orderRouter = Router();
 
@@ -59,7 +59,8 @@ orderRouter.post("/", async (req, res) => {
         },
         IDEMPOTENCY_KEY_REUSED: {
           status: 409,
-          message: "This idempotency key was already used for a different order.",
+          message:
+            "This idempotency key was already used for a different order.",
         },
         PRODUCT_CURRENCY_MISMATCH: {
           status: 400,
@@ -70,9 +71,9 @@ orderRouter.post("/", async (req, res) => {
           message: "Discount cannot exceed the order subtotal.",
         },
         ORDER_CONCURRENCY_RETRY_EXHAUSTED: {
-           status: 503,
-           message: "Order processing is temporarily busy. Please retry.",
-          },
+          status: 503,
+          message: "Order processing is temporarily busy. Please retry.",
+        },
       };
 
       const knownError = errors[error.message];
@@ -139,7 +140,8 @@ orderRouter.post("/:orderId/delivery", async (req, res) => {
         },
         BUSINESS_PICKUP_LOCATION_INCOMPLETE: {
           status: 409,
-          message: "Complete the business pickup location before requesting delivery.",
+          message:
+            "Complete the business pickup location before requesting delivery.",
         },
       };
 
@@ -158,6 +160,77 @@ orderRouter.post("/:orderId/delivery", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to request delivery.",
+    });
+  }
+});
+
+orderRouter.post("/:orderId/delivery/assign", async (req, res) => {
+  if (req.auth!.role !== "OWNER" && req.auth!.role !== "ADMIN") {
+    return res.status(403).json({
+      success: false,
+      message: "You are not authorized to assign riders.",
+    });
+  }
+
+  const validation = assignDeliverySchema.safeParse(req.body);
+
+  if (!validation.success) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid delivery assignment data.",
+      errors: validation.error.issues.map((issue) => ({
+        field: issue.path.join("."),
+        message: issue.message,
+      })),
+    });
+  }
+
+  try {
+    const delivery = await assignDelivery(
+      req.auth!.businessAccountId,
+      req.params.orderId,
+      validation.data.riderId,
+      req.auth!.userId,
+      validation.data.reason,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Rider assigned successfully.",
+      data: delivery,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      const errors: Record<string, { status: number; message: string }> = {
+        DELIVERY_NOT_FOUND: {
+          status: 404,
+          message: "Delivery not found.",
+        },
+        DELIVERY_CANNOT_BE_ASSIGNED: {
+          status: 409,
+          message: "This delivery can no longer be assigned or reassigned.",
+        },
+        RIDER_NOT_ELIGIBLE: {
+          status: 409,
+          message: "Rider is not approved or is inactive.",
+        },
+      };
+
+      const knownError = errors[error.message];
+
+      if (knownError) {
+        return res.status(knownError.status).json({
+          success: false,
+          message: knownError.message,
+        });
+      }
+    }
+
+    console.error("Failed to assign rider:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to assign rider.",
     });
   }
 });

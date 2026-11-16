@@ -1,4 +1,3 @@
-
 import { prisma } from "../lib/prisma";
 
 function getPrismaErrorCode(error: unknown): string | undefined {
@@ -128,4 +127,114 @@ export async function requestDelivery(
 
     throw error;
   }
+}
+
+export async function assignDelivery(
+  businessAccountId: string,
+  orderId: string,
+  riderId: string,
+  actorId: string,
+  reason?: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    const deliveries = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT d."id"
+      FROM "Delivery" d
+      INNER JOIN "Order" o ON o."id" = d."orderId"
+      WHERE
+        o."id" = ${orderId}
+        AND o."businessAccountId" = ${businessAccountId}
+      FOR UPDATE OF d
+    `;
+
+    if (deliveries.length === 0) {
+      throw new Error("DELIVERY_NOT_FOUND");
+    }
+    const deliveryId = deliveries[0].id;
+
+    const delivery = await tx.delivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+
+    if (delivery.status !== "REQUESTED" && delivery.status !== "ASSIGNED") {
+      throw new Error("DELIVERY_CANNOT_BE_ASSIGNED");
+    }
+
+    if (delivery.assignedRiderId === riderId) {
+      return tx.delivery.findUnique({
+        where: { id: deliveryId },
+        include: {
+          assignmentHistory: {
+            orderBy: { createdAt: "asc" },
+          },
+          statusHistory: {
+            orderBy: { createdAt: "asc" },
+          },
+        },
+      });
+    }
+
+    const rider = await tx.rider.findFirst({
+      where: {
+        id: riderId,
+        approvalStatus: "APPROVED",
+        isActive: true,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!rider) {
+      throw new Error("RIDER_NOT_ELIGIBLE");
+    }
+
+    const previousRiderId = delivery.assignedRiderId;
+
+    const updatedDelivery = await tx.delivery.update({
+      where: { id: deliveryId },
+      data: {
+        assignedRiderId: rider.id,
+        assignedAt: new Date(),
+
+        ...(delivery.status === "REQUESTED"
+          ? { status: "ASSIGNED" as const }
+          : {}),
+
+        assignmentHistory: {
+          create: {
+            previousRiderId,
+            newRiderId: rider.id,
+            assignedById: actorId,
+            assignedByType: "BUSINESS_USER",
+            reason,
+          },
+        },
+
+        ...(delivery.status === "REQUESTED"
+          ? {
+              statusHistory: {
+                create: {
+                  fromStatus: "REQUESTED",
+                  toStatus: "ASSIGNED",
+                  actorId,
+                  actorType: "BUSINESS_USER",
+                  notes: "Rider assigned by the business.",
+                },
+              },
+            }
+          : {}),
+      },
+      include: {
+        assignmentHistory: {
+          orderBy: { createdAt: "asc" },
+        },
+        statusHistory: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    return updatedDelivery;
+  });
 }
