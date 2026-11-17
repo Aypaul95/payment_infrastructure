@@ -56,3 +56,9 @@ export type RegisterRiderInput = z.infer<
 export type LoginRiderInput = z.infer<
   typeof loginRiderSchema
 >;
+
+export const completeRiderDeliverySchema = z.object({
+  confirmationCode: z
+    .string()
+    .regex(/^\d{6}$/, "Confirmation code must contain exactly 6 digits."),
+});

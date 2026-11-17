@@ -1,4 +1,11 @@
 import { prisma } from "../lib/prisma";
+import {
+  generateDeliveryConfirmationCode,
+  verifyDeliveryConfirmationCode,
+  deliveryConfirmationLimits,
+} from "./delivery-confirmation.service";
+import { encryptSmsPayload } from "../lib/sms-encryption";
+import { toTermiiPhoneNumber } from "../lib/phone";
 
 function getPrismaErrorCode(error: unknown): string | undefined {
   if (
@@ -277,8 +284,9 @@ export async function progressRiderDelivery(
   deliveryId: string,
   riderId: string,
   action: RiderDeliveryAction,
+  confirmationCode?: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const lockedDeliveries = await tx.$queryRaw<
       Array<{ id: string }>
     >`
@@ -341,6 +349,44 @@ export async function progressRiderDelivery(
       throw new Error("ORDER_STATUS_CONFLICT");
     }
 
+      if (action === "COMPLETE") {
+          if (delivery.confirmationAttempts >= deliveryConfirmationLimits.maxAttempts) {
+              throw new Error("CONFIRMATION_ATTEMPTS_EXCEEDED");
+          }
+
+          if (
+              !confirmationCode ||
+              !delivery.confirmationCodeHash ||
+              !delivery.confirmationCodeExpiresAt ||
+              delivery.confirmationCodeExpiresAt <= new Date()
+          ) {
+              return null;
+          }
+
+          const isValid = verifyDeliveryConfirmationCode(
+              confirmationCode,
+              delivery.confirmationCodeHash,
+          );
+
+          if (!isValid) {
+              await tx.delivery.update({
+                  where: { id: deliveryId },
+                  data: {
+                      confirmationAttempts: { increment: 1 },
+                  },
+              });
+
+              return null;
+          }
+
+          await tx.delivery.update({
+              where: { id: deliveryId },
+              data: {
+                  confirmationVerifiedAt: new Date(),
+              },
+          });
+      }
+
     if (action === "PICKUP") {
       const updatedOrder = await tx.order.updateMany({
         where: {
@@ -372,13 +418,42 @@ export async function progressRiderDelivery(
         throw new Error("ORDER_STATUS_CONFLICT");
       }
     }
+      const confirmationNotification =
+          action === "START"
+              ? (() => {
+                  const generated = generateDeliveryConfirmationCode();
 
+                  const to = toTermiiPhoneNumber(
+                      delivery.dropoffRecipientPhone,
+                  );
+
+                  const message =
+                      `PAYINFRA: Your delivery confirmation code is ${generated.code}. ` +
+                      "Share this code with your rider only after your order has arrived. " +
+                      "This code expires in 60 minutes.";
+
+                  return {
+                      to,
+                      hash: generated.hash,
+                      expiresAt: generated.expiresAt,
+                      encryptedPayload: encryptSmsPayload(message),
+                  };
+              })()
+              : null;
     const timestamp = new Date();
 
     const updatedDelivery = await tx.delivery.update({
       where: { id: deliveryId },
       data: {
         status: transition.to,
+          ...(confirmationNotification
+              ? {
+                  confirmationCodeHash: confirmationNotification.hash,
+                  confirmationCodeExpiresAt: confirmationNotification.expiresAt,
+                  confirmationAttempts: 0,
+                  confirmationVerifiedAt: null,
+              }
+              : {}),
         ...(transition.timestamp === "acceptedAt"
           ? { acceptedAt: timestamp }
           : {}),
@@ -405,6 +480,32 @@ export async function progressRiderDelivery(
       },
     });
 
-    return updatedDelivery;
+      if (confirmationNotification) {
+          await tx.smsOutbox.create({
+              data: {
+                  deliveryId,
+                  recipientPhone: confirmationNotification.to,
+                  encryptedPayload: confirmationNotification.encryptedPayload,
+              },
+          });
+      }
+
+      return {
+          delivery: updatedDelivery,
+      };
   });
+
+    if (!result) {
+        throw new Error("INVALID_CONFIRMATION_CODE");
+    }
+
+    const {
+        confirmationCodeHash,
+        confirmationCodeExpiresAt,
+        confirmationAttempts,
+        confirmationVerifiedAt,
+        ...safeDelivery
+    } = result.delivery;
+
+    return safeDelivery;
 }

@@ -106,6 +106,13 @@ enum DeliveryActorType {
   SYSTEM
 }
 
+enum SmsOutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
 model BusinessAccount {
   id                  String   @id @default(cuid())
   businessName        String
@@ -349,6 +356,11 @@ model Delivery {
   deliveredAt DateTime?
   cancelledAt DateTime?
 
+  confirmationCodeHash      String?
+  confirmationCodeExpiresAt DateTime?
+  confirmationAttempts      Int       @default(0)
+  confirmationVerifiedAt    DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -357,6 +369,7 @@ model Delivery {
 
   assignmentHistory DeliveryAssignmentHistory[]
   statusHistory     DeliveryStatusHistory[]
+  smsOutboxItems    SmsOutbox[]
 
   @@index([assignedRiderId, status])
   @@index([status, requestedAt])
@@ -392,6 +405,29 @@ model DeliveryStatusHistory {
 
   @@index([deliveryId, createdAt])
   @@index([actorId, createdAt])
+}
+
+model SmsOutbox {
+  id               String          @id @default(cuid())
+  deliveryId       String
+  recipientPhone   String
+  encryptedPayload String
+  status           SmsOutboxStatus @default(PENDING)
+  attempts         Int             @default(0)
+  maxAttempts      Int             @default(5)
+  nextAttemptAt    DateTime        @default(now())
+  lockedAt         DateTime?
+  lockToken        String?
+  sentAt           DateTime?
+  lastError        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+  @@index([deliveryId, createdAt])
 }
 
 model OrderItem {

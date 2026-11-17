@@ -29,6 +29,21 @@ const { prisma } = await import("../src/lib/prisma");
 const { orderRouter } = await import("../src/routes/order.routes");
 const { paymentRouter } = await import("../src/routes/payment.routes");
 const { riderRouter } = await import("../src/routes/rider.routes");
+const { setSmsProvider } = await import("../src/lib/sms");
+const { processNextSmsOutboxJob } = await import(
+  "../src/services/sms-outbox.service"
+);
+
+const capturedSmsMessages: Array<{
+  to: string;
+  message: string;
+}> = [];
+
+setSmsProvider({
+  async send(message) {
+    capturedSmsMessages.push(message);
+  },
+});
 
 let businessAccountId = "";
 let businessUserId = "";
@@ -493,6 +508,13 @@ after(async () => {
     }
 
     if (orderIds.length > 0) {
+      await prisma.smsOutbox.deleteMany({
+        where: {
+          delivery: {
+            orderId: { in: orderIds },
+          },
+        },
+      });
       await prisma.deliveryStatusHistory.deleteMany({
         where: {
           delivery: {
@@ -1890,7 +1912,6 @@ test("allows an assigned rider to complete the delivery lifecycle", async () => 
     { action: "accept", expectedStatus: "ACCEPTED" },
     { action: "pickup", expectedStatus: "PICKED_UP" },
     { action: "start", expectedStatus: "IN_TRANSIT" },
-    { action: "complete", expectedStatus: "DELIVERED" },
   ] as const;
 
   for (const step of actions) {
@@ -1908,6 +1929,41 @@ test("allows an assigned rider to complete the delivery lifecycle", async () => 
     assert.equal(body.success, true);
     assert.equal(body.data.status, step.expectedStatus);
   }
+  const smsProcessed = await processNextSmsOutboxJob();
+
+  assert.equal(smsProcessed, true);
+  const capturedMessage = capturedSmsMessages.at(-1);
+
+  assert.ok(capturedMessage);
+  const smsOutboxItem = await prisma.smsOutbox.findFirstOrThrow({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(smsOutboxItem.status, "SENT");
+  assert.equal(smsOutboxItem.attempts, 1);
+  assert.equal(smsOutboxItem.recipientPhone, capturedMessage.to);
+  assert.match(capturedMessage.message, /confirmation code is \d{6}/);
+
+  const confirmationCode = capturedMessage.message.match(
+    /confirmation code is (\d{6})/,
+  )?.[1];
+
+  assert.ok(confirmationCode);
+
+  const completionResponse = await fetch(
+    `${baseUrl}/riders/deliveries/${delivery.id}/complete`,
+    {
+      method: "POST",
+      headers: riderAuthHeaders(rider.id),
+      body: JSON.stringify({ confirmationCode }),
+    },
+  );
+
+  const completionBody = await completionResponse.json();
+
+  assert.equal(completionResponse.status, 200);
+  assert.equal(completionBody.success, true);
+  assert.equal(completionBody.data.status, "DELIVERED");
 
   const updatedDelivery = await prisma.delivery.findUniqueOrThrow({
     where: { id: delivery.id },
@@ -1926,11 +1982,12 @@ test("allows an assigned rider to complete the delivery lifecycle", async () => 
   assert.ok(updatedDelivery.acceptedAt);
   assert.ok(updatedDelivery.pickedUpAt);
   assert.ok(updatedDelivery.deliveredAt);
+  assert.ok(updatedDelivery.confirmationVerifiedAt);
 
   assert.equal(updatedDelivery.statusHistory.length, 6);
   assert.deepEqual(
     updatedDelivery.statusHistory.map((entry) => entry.toStatus),
-    ["REQUESTED", "ASSIGNED", "ACCEPTED", "PICKED_UP", "IN_TRANSIT", "DELIVERED"].slice(0, 6),
+    ["REQUESTED", "ASSIGNED", "ACCEPTED", "PICKED_UP", "IN_TRANSIT", "DELIVERED"],
   );
 
   assert.equal(
@@ -1941,6 +1998,7 @@ test("allows an assigned rider to complete the delivery lifecycle", async () => 
 
   assert.equal(updatedOrder.status, "DELIVERED");
 });
+
 
 test("prevents a rider from accepting another rider's delivery", async () => {
   const { delivery } = await createAssignedTestDelivery();

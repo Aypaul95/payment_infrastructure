@@ -7,6 +7,7 @@ import {
 import {
   registerRiderSchema,
   loginRiderSchema,
+  completeRiderDeliverySchema,
 } from "../validators/rider.validator";
 import {
   createRiderVehicle,
@@ -512,10 +513,26 @@ async function handleRiderDeliveryAction(
           });
       }
 
+      let confirmationCode: string | undefined;
+
+      if (action === "COMPLETE") {
+          const validation = completeRiderDeliverySchema.safeParse(req.body);
+
+          if (!validation.success) {
+              return res.status(400).json({
+                  success: false,
+                  message: "A valid 6-digit customer confirmation code is required.",
+              });
+          }
+
+          confirmationCode = validation.data.confirmationCode;
+      }
+
       const delivery = await progressRiderDelivery(
           deliveryId,
           req.riderAuth!.riderId,
           action,
+          confirmationCode,
       );
 
     return res.status(200).json({
@@ -525,6 +542,19 @@ async function handleRiderDeliveryAction(
     });
   } catch (error) {
     if (error instanceof Error) {
+        if (error.message === "INVALID_CONFIRMATION_CODE") {
+            return res.status(400).json({
+                success: false,
+                message: "The customer confirmation code is invalid or expired.",
+            });
+        }
+
+        if (error.message === "CONFIRMATION_ATTEMPTS_EXCEEDED") {
+            return res.status(429).json({
+                success: false,
+                message: "Maximum confirmation attempts exceeded.",
+            });
+        }
       if (error.message === "DELIVERY_NOT_FOUND") {
         return res.status(404).json({
           success: false,
