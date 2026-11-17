@@ -28,6 +28,7 @@ if (!jwtSecret || jwtSecret.length < 32) {
 const { prisma } = await import("../src/lib/prisma");
 const { orderRouter } = await import("../src/routes/order.routes");
 const { paymentRouter } = await import("../src/routes/payment.routes");
+const { riderRouter } = await import("../src/routes/rider.routes");
 
 let businessAccountId = "";
 let businessUserId = "";
@@ -47,6 +48,7 @@ const app = express();
 app.use(express.json());
 app.use("/orders", orderRouter);
 app.use("/payments", paymentRouter);
+app.use("/riders", riderRouter);
 
 const mockPaystackInitializationCalls = new Map<string, number>();
 
@@ -122,6 +124,28 @@ function createToken(
       audience: "payment-infrastructure-client",
     },
   );
+}
+
+function createRiderToken(riderId: string) {
+  return jwt.sign(
+    {
+      accountType: "RIDER",
+    },
+    jwtSecret!,
+    {
+      subject: riderId,
+      expiresIn: "15m",
+      issuer: "payment-infrastructure-api",
+      audience: "payment-infrastructure-client",
+    },
+  );
+}
+
+function riderAuthHeaders(riderId: string) {
+  return {
+    Authorization: `Bearer ${createRiderToken(riderId)}`,
+    "Content-Type": "application/json",
+  };
 }
 
 function authHeaders(userId = businessUserId, accountId = businessAccountId) {
@@ -294,6 +318,56 @@ async function createReadyOrder(productId: string) {
   });
 
   return body.data;
+}
+
+async function createAssignedTestDelivery() {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+  const rider = await createTestRider();
+
+  const requestResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+    },
+  );
+
+  if (!requestResponse.ok) {
+    throw new Error(
+      `Failed to request test delivery: ${await requestResponse.text()}`,
+    );
+  }
+
+  const requestBody = await requestResponse.json();
+
+  const assignmentResponse = await fetch(
+    `${baseUrl}/orders/${order.id}/delivery/assign`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        riderId: rider.id,
+        reason: "Preparing rider lifecycle test.",
+      }),
+    },
+  );
+
+  if (!assignmentResponse.ok) {
+    throw new Error(
+      `Failed to assign test rider: ${await assignmentResponse.text()}`,
+    );
+  }
+
+  const assignmentBody = await assignmentResponse.json();
+
+  return {
+    order,
+    rider,
+    delivery: assignmentBody.data,
+  };
 }
 
 before(async () => {
@@ -1807,4 +1881,177 @@ test("rejects delivery requests when business pickup location is incomplete", as
   });
 
   assert.equal(delivery, null);
+});
+
+test("allows an assigned rider to complete the delivery lifecycle", async () => {
+  const { order, rider, delivery } = await createAssignedTestDelivery();
+
+  const actions = [
+    { action: "accept", expectedStatus: "ACCEPTED" },
+    { action: "pickup", expectedStatus: "PICKED_UP" },
+    { action: "start", expectedStatus: "IN_TRANSIT" },
+    { action: "complete", expectedStatus: "DELIVERED" },
+  ] as const;
+
+  for (const step of actions) {
+    const response = await fetch(
+      `${baseUrl}/riders/deliveries/${delivery.id}/${step.action}`,
+      {
+        method: "POST",
+        headers: riderAuthHeaders(rider.id),
+      },
+    );
+
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.success, true);
+    assert.equal(body.data.status, step.expectedStatus);
+  }
+
+  const updatedDelivery = await prisma.delivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+    include: {
+      statusHistory: {
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+
+  const updatedOrder = await prisma.order.findUniqueOrThrow({
+    where: { id: order.id },
+  });
+
+  assert.equal(updatedDelivery.status, "DELIVERED");
+  assert.ok(updatedDelivery.acceptedAt);
+  assert.ok(updatedDelivery.pickedUpAt);
+  assert.ok(updatedDelivery.deliveredAt);
+
+  assert.equal(updatedDelivery.statusHistory.length, 6);
+  assert.deepEqual(
+    updatedDelivery.statusHistory.map((entry) => entry.toStatus),
+    ["REQUESTED", "ASSIGNED", "ACCEPTED", "PICKED_UP", "IN_TRANSIT", "DELIVERED"].slice(0, 6),
+  );
+
+  assert.equal(
+    updatedDelivery.statusHistory
+      .filter((entry) => entry.actorType === "RIDER").length,
+    4,
+  );
+
+  assert.equal(updatedOrder.status, "DELIVERED");
+});
+
+test("prevents a rider from accepting another rider's delivery", async () => {
+  const { delivery } = await createAssignedTestDelivery();
+  const anotherRider = await createTestRider();
+
+  const response = await fetch(
+    `${baseUrl}/riders/deliveries/${delivery.id}/accept`,
+    {
+      method: "POST",
+      headers: riderAuthHeaders(anotherRider.id),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 403);
+  assert.equal(body.success, false);
+  assert.equal(body.message, "This delivery is not assigned to you.");
+
+  const unchangedDelivery = await prisma.delivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+  });
+
+  assert.equal(unchangedDelivery.status, "ASSIGNED");
+});
+
+test("rejects a rider accepting the same delivery twice", async () => {
+  const { delivery, rider } = await createAssignedTestDelivery();
+
+  const acceptDelivery = () =>
+    fetch(`${baseUrl}/riders/deliveries/${delivery.id}/accept`, {
+      method: "POST",
+      headers: riderAuthHeaders(rider.id),
+    });
+
+  const firstResponse = await acceptDelivery();
+  const firstBody = await firstResponse.json();
+
+  const secondResponse = await acceptDelivery();
+  const secondBody = await secondResponse.json();
+
+  assert.equal(firstResponse.status, 200);
+  assert.equal(firstBody.data.status, "ACCEPTED");
+
+  assert.equal(secondResponse.status, 409);
+  assert.equal(secondBody.success, false);
+
+  const historyCount = await prisma.deliveryStatusHistory.count({
+    where: { deliveryId: delivery.id },
+  });
+
+  assert.equal(historyCount, 3);
+});
+
+test("rejects a rider attempting pickup before accepting a delivery", async () => {
+  const { delivery, rider } = await createAssignedTestDelivery();
+
+  const response = await fetch(
+    `${baseUrl}/riders/deliveries/${delivery.id}/pickup`,
+    {
+      method: "POST",
+      headers: riderAuthHeaders(rider.id),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+
+  const unchangedDelivery = await prisma.delivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+  });
+
+  assert.equal(unchangedDelivery.status, "ASSIGNED");
+
+  const unchangedOrder = await prisma.order.findUniqueOrThrow({
+    where: { id: delivery.orderId },
+  });
+
+  assert.equal(unchangedOrder.status, "READY_FOR_DELIVERY");
+});
+
+test("prevents a pending rider from progressing an assigned delivery", async () => {
+  const { delivery, rider } = await createAssignedTestDelivery();
+
+  await prisma.rider.update({
+    where: { id: rider.id },
+    data: { approvalStatus: "PENDING" },
+  });
+
+  const response = await fetch(
+    `${baseUrl}/riders/deliveries/${delivery.id}/accept`,
+    {
+      method: "POST",
+      headers: riderAuthHeaders(rider.id),
+    },
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 403);
+  assert.equal(body.success, false);
+  assert.equal(
+    body.message,
+    "Your rider account is not approved or active.",
+  );
+
+  const unchangedDelivery = await prisma.delivery.findUniqueOrThrow({
+    where: { id: delivery.id },
+  });
+
+  assert.equal(unchangedDelivery.status, "ASSIGNED");
 });

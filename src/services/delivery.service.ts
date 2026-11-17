@@ -238,3 +238,173 @@ export async function assignDelivery(
     return updatedDelivery;
   });
 }
+
+
+type RiderDeliveryAction =
+  | "ACCEPT"
+  | "PICKUP"
+  | "START"
+  | "COMPLETE";
+
+const riderDeliveryTransitions = {
+  ACCEPT: {
+    from: "ASSIGNED",
+    to: "ACCEPTED",
+    timestamp: "acceptedAt",
+    notes: "Delivery accepted by the assigned rider.",
+  },
+  PICKUP: {
+    from: "ACCEPTED",
+    to: "PICKED_UP",
+    timestamp: "pickedUpAt",
+    notes: "Pickup confirmed by the assigned rider.",
+  },
+  START: {
+    from: "PICKED_UP",
+    to: "IN_TRANSIT",
+    timestamp: null,
+    notes: "Delivery journey started by the assigned rider.",
+  },
+  COMPLETE: {
+    from: "IN_TRANSIT",
+    to: "DELIVERED",
+    timestamp: "deliveredAt",
+    notes: "Delivery completed by the assigned rider.",
+  },
+} as const;
+
+export async function progressRiderDelivery(
+  deliveryId: string,
+  riderId: string,
+  action: RiderDeliveryAction,
+) {
+  return prisma.$transaction(async (tx) => {
+    const lockedDeliveries = await tx.$queryRaw<
+      Array<{ id: string }>
+    >`
+      SELECT "id"
+      FROM "Delivery"
+      WHERE "id" = ${deliveryId}
+      FOR UPDATE
+    `;
+
+    if (lockedDeliveries.length === 0) {
+      throw new Error("DELIVERY_NOT_FOUND");
+    }
+
+    const delivery = await tx.delivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+      include: {
+        order: {
+          select: {
+            id: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (delivery.assignedRiderId !== riderId) {
+      throw new Error("DELIVERY_NOT_ASSIGNED_TO_RIDER");
+    }
+
+    const rider = await tx.rider.findFirst({
+      where: {
+        id: riderId,
+        approvalStatus: "APPROVED",
+        isActive: true,
+      },
+      select: { id: true },
+    });
+
+    if (!rider) {
+      throw new Error("RIDER_NOT_ELIGIBLE");
+    }
+
+    const transition = riderDeliveryTransitions[action];
+
+    if (delivery.status !== transition.from) {
+      throw new Error("INVALID_DELIVERY_STATUS_TRANSITION");
+    }
+
+    if (
+      action === "PICKUP" &&
+      delivery.order.status !== "READY_FOR_DELIVERY"
+    ) {
+      throw new Error("ORDER_STATUS_CONFLICT");
+    }
+
+    if (
+      action === "COMPLETE" &&
+      delivery.order.status !== "OUT_FOR_DELIVERY"
+    ) {
+      throw new Error("ORDER_STATUS_CONFLICT");
+    }
+
+    if (action === "PICKUP") {
+      const updatedOrder = await tx.order.updateMany({
+        where: {
+          id: delivery.order.id,
+          status: "READY_FOR_DELIVERY",
+        },
+        data: {
+          status: "OUT_FOR_DELIVERY",
+        },
+      });
+
+      if (updatedOrder.count !== 1) {
+        throw new Error("ORDER_STATUS_CONFLICT");
+      }
+    }
+
+    if (action === "COMPLETE") {
+      const updatedOrder = await tx.order.updateMany({
+        where: {
+          id: delivery.order.id,
+          status: "OUT_FOR_DELIVERY",
+        },
+        data: {
+          status: "DELIVERED",
+        },
+      });
+
+      if (updatedOrder.count !== 1) {
+        throw new Error("ORDER_STATUS_CONFLICT");
+      }
+    }
+
+    const timestamp = new Date();
+
+    const updatedDelivery = await tx.delivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: transition.to,
+        ...(transition.timestamp === "acceptedAt"
+          ? { acceptedAt: timestamp }
+          : {}),
+        ...(transition.timestamp === "pickedUpAt"
+          ? { pickedUpAt: timestamp }
+          : {}),
+        ...(transition.timestamp === "deliveredAt"
+          ? { deliveredAt: timestamp }
+          : {}),
+        statusHistory: {
+          create: {
+            fromStatus: transition.from,
+            toStatus: transition.to,
+            actorId: riderId,
+            actorType: "RIDER",
+            notes: transition.notes,
+          },
+        },
+      },
+      include: {
+        statusHistory: {
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    return updatedDelivery;
+  });
+}

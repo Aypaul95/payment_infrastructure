@@ -27,6 +27,7 @@ import {
   createRiderKycSubmission,
   listRiderKycSubmissions,
 } from "../services/rider-kyc.service";
+import { progressRiderDelivery } from "../services/delivery.service";
 import { createRiderKycSubmissionSchema } from "../validators/rider-kyc.validator";
 import multer from "multer";
 
@@ -493,4 +494,98 @@ riderRouter.get(
       });
     }
   },
+);
+
+
+async function handleRiderDeliveryAction(
+  req: import("express").Request,
+  res: import("express").Response,
+  action: "ACCEPT" | "PICKUP" | "START" | "COMPLETE",
+) {
+  try {
+      const deliveryId = req.params.deliveryId;
+
+      if (typeof deliveryId !== "string" || !deliveryId.trim()) {
+          return res.status(400).json({
+              success: false,
+              message: "A valid delivery ID is required.",
+          });
+      }
+
+      const delivery = await progressRiderDelivery(
+          deliveryId,
+          req.riderAuth!.riderId,
+          action,
+      );
+
+    return res.status(200).json({
+      success: true,
+      message: "Delivery status updated successfully.",
+      data: delivery,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "DELIVERY_NOT_FOUND") {
+        return res.status(404).json({
+          success: false,
+          message: "Delivery not found.",
+        });
+      }
+
+      if (error.message === "DELIVERY_NOT_ASSIGNED_TO_RIDER") {
+        return res.status(403).json({
+          success: false,
+          message: "This delivery is not assigned to you.",
+        });
+      }
+
+      if (error.message === "RIDER_NOT_ELIGIBLE") {
+        return res.status(403).json({
+          success: false,
+          message: "Your rider account is not approved or active.",
+        });
+      }
+
+      if (
+        error.message === "INVALID_DELIVERY_STATUS_TRANSITION" ||
+        error.message === "ORDER_STATUS_CONFLICT"
+      ) {
+        return res.status(409).json({
+          success: false,
+          message: "This delivery cannot make that status transition.",
+        });
+      }
+    }
+
+    console.error("Rider delivery action failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update delivery status.",
+    });
+  }
+}
+
+riderRouter.post(
+  "/deliveries/:deliveryId/accept",
+  authenticateRider,
+  (req, res) => handleRiderDeliveryAction(req, res, "ACCEPT"),
+);
+
+riderRouter.post(
+  "/deliveries/:deliveryId/pickup",
+  authenticateRider,
+  (req, res) => handleRiderDeliveryAction(req, res, "PICKUP"),
+);
+
+riderRouter.post(
+  "/deliveries/:deliveryId/start",
+  authenticateRider,
+  (req, res) => handleRiderDeliveryAction(req, res, "START"),
+);
+
+riderRouter.post(
+  "/deliveries/:deliveryId/complete",
+  authenticateRider,
+  (req, res) => handleRiderDeliveryAction(req, res, "COMPLETE"),
 );
