@@ -34,6 +34,16 @@ import MyDeliveriesPage from "./pages/rider/MyDeliveriesPage";
 import RiderEarningsPage from "./pages/rider/RiderEarningsPage";
 import RiderProfilePage from "./pages/rider/RiderProfilePage";
 
+import AdminLayout from "./layouts/admin/AdminLayout";
+import AdminDashboardPage from "./pages/admin/AdminDashboardPage";
+import BusinessesPage from "./pages/admin/BusinessesPage";
+import AdminCustomersPage from "./pages/admin/AdminCustomersPage";
+import AdminRidersPage from "./pages/admin/AdminRidersPage";
+import AdminOrdersPage from "./pages/admin/AdminOrdersPage";
+import AdminDeliveriesPage from "./pages/admin/AdminDeliveriesPage";
+import AdminPaymentsPage from "./pages/admin/AdminPaymentsPage";
+import AdminSettingsPage from "./pages/admin/AdminSettingsPage";
+
 function PlaceholderPage({ title }: { title: string }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
@@ -181,7 +191,6 @@ function App() {
 
           {/* Rider PWA */}
           <Route element={<RiderLayout />}>
-
             <Route
               path="/rider"
               element={<RiderDashboardPage />}
@@ -205,6 +214,49 @@ function App() {
             <Route
               path="/rider/profile"
               element={<RiderProfilePage />}
+            />
+          </Route>
+
+          {/* Admin Dashboard */}
+          <Route element={<AdminLayout />}>
+            <Route
+              path="/admin"
+              element={<AdminDashboardPage />}
+            />
+
+            <Route
+              path="/admin/businesses"
+              element={<BusinessesPage />}
+            />
+
+            <Route
+              path="/admin/customers"
+              element={<AdminCustomersPage />}
+            />
+
+            <Route
+              path="/admin/riders"
+              element={<AdminRidersPage />}
+            />
+
+            <Route
+              path="/admin/orders"
+              element={<AdminOrdersPage />}
+            />
+
+            <Route
+              path="/admin/deliveries"
+              element={<AdminDeliveriesPage />}
+            />
+
+            <Route
+              path="/admin/payments"
+              element={<AdminPaymentsPage />}
+            />
+
+            <Route
+              path="/admin/settings"
+              element={<AdminSettingsPage />}
             />
           </Route>
 
