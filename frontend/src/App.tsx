@@ -27,6 +27,13 @@ import OrderTrackingPage from "./pages/customer/OrderTrackingPage";
 import OrderHistoryPage from "./pages/customer/OrderHistoryPage";
 import CustomerProfilePage from "./pages/customer/CustomerProfilePage";
 
+import RiderLayout from "./layouts/rider/RiderLayout";
+import RiderDashboardPage from "./pages/rider/RiderDashboardPage";
+import DeliveryRequestsPage from "./pages/rider/DeliveryRequestsPage";
+import MyDeliveriesPage from "./pages/rider/MyDeliveriesPage";
+import RiderEarningsPage from "./pages/rider/RiderEarningsPage";
+import RiderProfilePage from "./pages/rider/RiderProfilePage";
+
 function PlaceholderPage({ title }: { title: string }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
@@ -45,80 +52,79 @@ function App() {
     <BrowserRouter>
       <CartProvider>
         <Routes>
-        {/* Business Dashboard */}
-        <Route
-          path="/"
-          element={<Navigate to="/dashboard" replace />}
-        />
-
-        <Route
-          element={
-            <DashboardLayout>
-              <></>
-            </DashboardLayout>
-          }
-        >
+          {/* Business Dashboard */}
           <Route
-            path="/dashboard"
-            element={<DashboardOverview />}
+            path="/"
+            element={<Navigate to="/dashboard" replace />}
           />
 
           <Route
-            path="/products"
-            element={<ProductsPage />}
+            element={
+              <DashboardLayout>
+                <></>
+              </DashboardLayout>
+            }
+          >
+            <Route
+              path="/dashboard"
+              element={<DashboardOverview />}
+            />
+
+            <Route
+              path="/products"
+              element={<ProductsPage />}
+            />
+
+            <Route
+              path="/inventory"
+              element={<InventoryPage />}
+            />
+
+            <Route
+              path="/orders"
+              element={<OrdersPage />}
+            />
+
+            <Route
+              path="/customers"
+              element={<CustomersPage />}
+            />
+
+            <Route
+              path="/deliveries"
+              element={<DeliveriesPage />}
+            />
+
+            <Route
+              path="/payments"
+              element={<PaymentsPage />}
+            />
+
+            <Route
+              path="/settings"
+              element={<SettingsPage />}
+            />
+          </Route>
+
+          {/* Customer App */}
+          <Route
+            path="/store"
+            element={
+              <CustomerLayout>
+                <StorePage />
+              </CustomerLayout>
+            }
           />
 
           <Route
-            path="/inventory"
-            element={<InventoryPage />}
+            path="/store/product/:productId"
+            element={
+              <CustomerLayout>
+                <ProductDetailsPage />
+              </CustomerLayout>
+            }
           />
 
-          <Route
-            path="/orders"
-            element={<OrdersPage />}
-          />
-
-          <Route
-            path="/customers"
-            element={<CustomersPage />}
-          />
-
-          <Route
-            path="/deliveries"
-            element={<DeliveriesPage />}
-          />
-
-          <Route
-            path="/payments"
-            element={<PaymentsPage />}
-          />
-
-          <Route
-            path="/settings"
-            element={<SettingsPage />}
-          />
-        </Route>
-
-        {/* Customer App */}
-        <Route
-          path="/store"
-          element={
-            <CustomerLayout>
-              <StorePage />
-            </CustomerLayout>
-          }
-        />
-
-        <Route
-          path="/store/product/:productId"
-          element={
-            <CustomerLayout>
-              <ProductDetailsPage />
-            </CustomerLayout>
-          }
-        />
-
-        {/* Other Customer App Pages */}
           <Route
             path="/store/cart"
             element={
@@ -164,20 +170,49 @@ function App() {
             }
           />
 
-        <Route
-          path="/store/profile"
+          <Route
+            path="/store/profile"
             element={
               <CustomerLayout>
                 <CustomerProfilePage />
               </CustomerLayout>
             }
-        />
+          />
 
-        {/* Not Found */}
-        <Route
-          path="*"
-          element={<PlaceholderPage title="Page Not Found" />}
-        />
+          {/* Rider PWA */}
+          <Route element={<RiderLayout />}>
+
+            <Route
+              path="/rider"
+              element={<RiderDashboardPage />}
+            />
+
+            <Route
+              path="/rider/requests"
+              element={<DeliveryRequestsPage />}
+            />
+
+            <Route
+              path="/rider/deliveries"
+              element={<MyDeliveriesPage />}
+            />
+
+            <Route
+              path="/rider/earnings"
+              element={<RiderEarningsPage />}
+            />
+
+            <Route
+              path="/rider/profile"
+              element={<RiderProfilePage />}
+            />
+          </Route>
+
+          {/* Not Found */}
+          <Route
+            path="*"
+            element={<PlaceholderPage title="Page Not Found" />}
+          />
         </Routes>
       </CartProvider>
     </BrowserRouter>
