@@ -20,6 +20,10 @@ import {
   createRiderVehicleSchema,
   updateRiderVehicleSchema,
 } from "../validators/rider-vehicle.validator";
+import {
+  getOrCreateRiderWallet,
+  getRiderWalletBalance,
+} from "../services/rider-wallet.service";
 import { authenticateRider } from "../middleware/rider-auth.middleware";
 import { riderAuthRateLimiter } from "../middleware/rider-auth-rate-limit.middleware";
 import { prisma } from "../lib/prisma";
@@ -186,6 +190,51 @@ riderRouter.get("/me", authenticateRider, async (req, res) => {
   }
 });
 
+riderRouter.get("/wallet", authenticateRider, async (req, res) => {
+  try {
+    const riderId = req.riderAuth!.riderId;
+
+    await getOrCreateRiderWallet(riderId);
+
+    const wallet = await getRiderWalletBalance(riderId);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...wallet,
+        availableBalance: wallet.availableBalance.toString(),
+        reservedBalance: wallet.reservedBalance.toString(),
+      },
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "RIDER_NOT_FOUND"
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "Rider account not found.",
+      });
+    }
+
+    if (
+      error instanceof Error &&
+      error.message === "RIDER_NOT_ELIGIBLE_FOR_WALLET"
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: "Wallet access requires an approved, active rider account.",
+      });
+    }
+
+    console.error("Failed to retrieve rider wallet:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to retrieve rider wallet.",
+    });
+  }
+});
 
 riderRouter.post("/vehicles", authenticateRider, async (req, res) => {
   const validation = createRiderVehicleSchema.safeParse(req.body);

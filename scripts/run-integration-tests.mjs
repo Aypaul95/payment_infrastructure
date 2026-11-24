@@ -115,6 +115,7 @@ try {
       "tests/business-location.integration.test.mts",
       "tests/orders.integration.test.mts",
       "tests/riders.integration.test.mts",
+      "tests/rider-wallet.integration.test.mts",
     ],
     {
       stdio: "inherit",

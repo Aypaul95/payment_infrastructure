@@ -99,6 +99,38 @@ enum DeliveryStatus {
   CANCELLED
 }
 
+enum RiderEarningStatus {
+  PENDING
+  AVAILABLE
+  SETTLED
+  REVERSED
+}
+
+enum RiderBankAccountStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum RiderWalletTransactionType {
+  CREDIT
+  DEBIT
+  RESERVE
+  RELEASE
+  PAYOUT
+  REVERSAL
+  ADJUSTMENT
+}
+
+enum RiderSettlementStatus {
+  PENDING
+  PROCESSING
+  SUCCESSFUL
+  FAILED
+  REVERSED
+  CANCELLED
+}
+
 enum DeliveryActorType {
   RIDER
   BUSINESS_USER
@@ -370,6 +402,7 @@ model Delivery {
   assignmentHistory DeliveryAssignmentHistory[]
   statusHistory     DeliveryStatusHistory[]
   smsOutboxItems    SmsOutbox[]
+  earning           RiderEarning?
 
   @@index([assignedRiderId, status])
   @@index([status, requestedAt])
@@ -459,9 +492,13 @@ model Rider {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
-  vehicles       RiderVehicle[]
+   vehicles       RiderVehicle[]
   kycSubmissions RiderKycSubmission[]
   deliveries     Delivery[]
+  earnings       RiderEarning[]
+  bankAccounts   RiderBankAccount[]
+  wallet         RiderWallet?
+  settlements    RiderSettlement[]
 
   @@index([approvalStatus, isActive])
 }
@@ -540,4 +577,112 @@ model CustomerAddress {
 
   @@index([customerId])
   @@index([customerId, isDefault])
+}
+
+model RiderEarning {
+  id                 String             @id @default(cuid())
+  riderId             String
+  deliveryId          String             @unique
+
+  baseAmount          BigInt            @default(0)
+  distanceKm         Decimal            @db.Decimal(10, 3)
+  ratePerKm         BigInt             @default(0)
+  distanceAmount     BigInt            @default(0)
+  incentiveAmount    BigInt            @default(0)
+
+  grossAmount        BigInt
+  commissionAmount   BigInt            @default(0)
+  deductionAmount   BigInt            @default(0)
+  netAmount         BigInt
+
+  currency           String            @default("NGN")
+  status             RiderEarningStatus @default(PENDING)
+
+  earnedAt           DateTime          @default(now())
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  rider    Rider    @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+
+  @@index([riderId, status, earnedAt])
+  @@index([status, earnedAt])
+}
+
+model RiderBankAccount {
+  id                     String                 @id @default(cuid())
+  riderId                String
+  bankCode               String
+  bankName               String
+  encryptedAccountNumber String
+  maskedAccountNumber    String
+  accountName            String
+  recipientCode          String?                @unique
+  status                 RiderBankAccountStatus @default(PENDING)
+  verifiedAt             DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  rider Rider @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  settlements RiderSettlement[]
+
+@@index([status])
+@@index([riderId, createdAt])
+}
+
+model RiderWallet {
+  id               String   @id @default(cuid())
+  riderId           String   @unique
+  availableBalance  BigInt   @default(0)
+  reservedBalance   BigInt   @default(0)
+  currency          String   @default("NGN")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  rider        Rider                   @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  transactions RiderWalletTransaction[]
+  settlements  RiderSettlement[]
+
+  @@index([currency])
+}
+
+model RiderWalletTransaction {
+  id          String                       @id @default(cuid())
+  walletId    String
+  type        RiderWalletTransactionType
+  amount      BigInt
+  reference   String                       @unique
+  description String?
+  currency    String                       @default("NGN")
+  createdAt   DateTime                     @default(now())
+
+  wallet RiderWallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt])
+  @@index([type, createdAt])
+}
+
+model RiderSettlement {
+  id                  String                @id @default(cuid())
+  riderId             String
+  walletId            String
+  bankAccountId       String
+  amount              BigInt
+  currency            String                @default("NGN")
+  status              RiderSettlementStatus @default(PENDING)
+  reference           String                @unique
+  idempotencyKey      String
+  paystackTransferCode String?              @unique
+  failureReason       String?
+  processedAt         DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  rider       Rider           @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  wallet      RiderWallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  bankAccount RiderBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+
+  @@index([riderId, status, createdAt])
+  @@index([status, createdAt])
+  @@unique([riderId, idempotencyKey])
 }
