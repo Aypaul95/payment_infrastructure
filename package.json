@@ -9,7 +9,7 @@
     "start": "node dist/server.js",
     "worker:reconciliation": "tsx src/workers/payment-reconciliation.worker-entry.ts",
     "worker:sms-outbox": "tsx src/workers/sms-outbox.worker-entry.ts",
-    "test:unit": "tsx --test tests/delivery-confirmation.service.test.mts tests/payment.service.test.mts tests/payment-confirmation.service.test.mts tests/payment-reconciliation.service.test.mts tests/payment-reconciliation.worker.test.mts tests/sms-encryption.service.test.mts tests/sms-outbox.service.test.mts tests/sms-outbox.worker.test.mts",
+    "test:unit": "tsx --test tests/delivery-confirmation.service.test.mts tests/payment.service.test.mts tests/payment-confirmation.service.test.mts tests/payment-reconciliation.service.test.mts tests/payment-reconciliation.worker.test.mts tests/sms-encryption.service.test.mts tests/sms-outbox.service.test.mts tests/sms-outbox.worker.test.mts tests/delivery-pricing.service.test.mts",
     "test:integration": "node scripts/run-integration-tests.mjs"
   },
   "keywords": [

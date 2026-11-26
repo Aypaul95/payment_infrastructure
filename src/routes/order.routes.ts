@@ -74,6 +74,34 @@ orderRouter.post("/", async (req, res) => {
           status: 503,
           message: "Order processing is temporarily busy. Please retry.",
         },
+        BUSINESS_PICKUP_LOCATION_INCOMPLETE: {
+          status: 409,
+          message: "Configure a complete pickup address and valid coordinates before accepting orders.",
+        },
+        CUSTOMER_ADDRESS_NOT_FOUND: {
+          status: 404,
+          message: "Customer delivery address not found.",
+        },
+        PRICING_CONFIGURATION_UNAVAILABLE: {
+          status: 503,
+          message: "Checkout is temporarily unavailable. Please try again later.",
+        },
+        INVALID_PRICING_CONFIGURATION: {
+          status: 503,
+          message: "Pricing configuration is invalid. Please contact support.",
+        },
+        DELIVERY_DISTANCE_EXCEEDS_LIMIT: {
+          status: 400,
+          message: "The delivery address is outside the supported delivery distance.",
+        },
+        INVALID_DELIVERY_COORDINATES: {
+          status: 400,
+          message: "The pickup or delivery coordinates are invalid.",
+        },
+        INVALID_DELIVERY_DISTANCE: {
+          status: 400,
+          message: "Unable to calculate a valid delivery distance.",
+        },
       };
 
       const knownError = errors[error.message];

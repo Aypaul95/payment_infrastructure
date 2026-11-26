@@ -2,6 +2,10 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma";
 import type { CreateOrderInput } from "../validators/order.validator";
+import {
+  calculateDeliveryPricing,
+  getActiveDeliveryPricingConfig,
+} from "./delivery-pricing.service";
 
 type OrderRequestItem = {
   productId: string;
@@ -55,6 +59,9 @@ function serializeOrder<
     subtotal: bigint;
     discount: bigint;
     total: bigint;
+    deliveryFee?: bigint | null;
+    serviceFee?: bigint | null;
+    deliveryDistanceKm?: { toString(): string } | null;
     items?: unknown[];
   },
 >(order: T) {
@@ -63,26 +70,42 @@ function serializeOrder<
     subtotal: order.subtotal.toString(),
     discount: order.discount.toString(),
     total: order.total.toString(),
+
+    ...(order.deliveryFee !== undefined
+      ? { deliveryFee: order.deliveryFee?.toString() ?? null }
+      : {}),
+
+    ...(order.serviceFee !== undefined
+      ? { serviceFee: order.serviceFee?.toString() ?? null }
+      : {}),
+
+    ...(order.deliveryDistanceKm !== undefined
+      ? {
+        deliveryDistanceKm:
+          order.deliveryDistanceKm?.toString() ?? null,
+      }
+      : {}),
+
     ...(order.items
       ? {
-          items: order.items.map((item) => {
-            const orderItem = item as {
-              unitPrice?: bigint;
-              subtotal?: bigint;
-              [key: string]: unknown;
-            };
+        items: order.items.map((item) => {
+          const orderItem = item as {
+            unitPrice?: bigint;
+            subtotal?: bigint;
+            [key: string]: unknown;
+          };
 
-            return {
-              ...orderItem,
-              ...(typeof orderItem.unitPrice === "bigint"
-                ? { unitPrice: orderItem.unitPrice.toString() }
-                : {}),
-              ...(typeof orderItem.subtotal === "bigint"
-                ? { subtotal: orderItem.subtotal.toString() }
-                : {}),
-            };
-          }),
-        }
+          return {
+            ...orderItem,
+            ...(typeof orderItem.unitPrice === "bigint"
+              ? { unitPrice: orderItem.unitPrice.toString() }
+              : {}),
+            ...(typeof orderItem.subtotal === "bigint"
+              ? { subtotal: orderItem.subtotal.toString() }
+              : {}),
+          };
+        }),
+      }
       : {}),
   };
 }
@@ -223,11 +246,26 @@ export async function createOrder(
             },
             select: {
               currency: true,
+              pickupStreetAddress: true,
+              pickupCity: true,
+              pickupState: true,
+              pickupLandmark: true,
+              pickupLatitude: true,
+              pickupLongitude: true,
             },
           });
 
           if (!business) {
             throw new Error("BUSINESS_NOT_FOUND");
+          }
+          if (
+            !business.pickupStreetAddress ||
+            !business.pickupCity ||
+            !business.pickupState ||
+            business.pickupLatitude === null ||
+            business.pickupLongitude === null
+          ) {
+            throw new Error("BUSINESS_PICKUP_LOCATION_INCOMPLETE");
           }
 
           const productById = new Map(
@@ -262,7 +300,27 @@ export async function createOrder(
             throw new Error("DISCOUNT_EXCEEDS_SUBTOTAL");
           }
 
-          const total = subtotal - discount;
+          const discountedSubtotal = subtotal - discount;
+
+          const pricingConfig = await getActiveDeliveryPricingConfig(tx);
+
+          const pricing = calculateDeliveryPricing({
+            pickup: {
+              latitude: business.pickupLatitude!,
+              longitude: business.pickupLongitude!,
+            },
+            dropoff: {
+              latitude: customerAddress.latitude,
+              longitude: customerAddress.longitude,
+            },
+            discountedSubtotal,
+            config: pricingConfig,
+          });
+
+          const total =
+            discountedSubtotal +
+            pricing.deliveryFee +
+            pricing.serviceFee;
 
           // Reserve available stock atomically.
           for (const item of requestedItems) {
@@ -294,6 +352,20 @@ export async function createOrder(
               deliveryLandmark: customerAddress.landmark,
               deliveryLatitude: customerAddress.latitude,
               deliveryLongitude: customerAddress.longitude,
+              // Vendor pickup location snapshot
+              pickupStreetAddress: business.pickupStreetAddress,
+              pickupCity: business.pickupCity,
+              pickupState: business.pickupState,
+              pickupLandmark: business.pickupLandmark,
+              pickupLatitude: business.pickupLatitude,
+              pickupLongitude: business.pickupLongitude,
+
+              // Delivery pricing snapshot
+              deliveryDistanceKm: pricing.deliveryDistanceKm,
+              deliveryDistanceSource: pricing.deliveryDistanceSource,
+              deliveryFee: pricing.deliveryFee,
+              serviceFee: pricing.serviceFee,
+              serviceFeeRateBps: pricing.serviceFeeRateBps,
               orderNumber: `ORD-${randomUUID()}`,
               idempotencyKey: input.idempotencyKey,
               subtotal,

@@ -400,6 +400,32 @@ before(async () => {
   secondBusinessAccountId = secondBusiness.businessAccountId;
   secondBusinessUserId = secondBusiness.businessUserId;
 
+  await setBusinessPickupLocation(businessAccountId);
+  await setBusinessPickupLocation(secondBusinessAccountId);
+
+  await prisma.platformPricingConfig.upsert({
+    where: { id: "default" },
+    update: {
+      deliveryBaseFee: 1000n,
+      deliveryFeePerKm: 100n,
+      minimumDeliveryFee: 1500n,
+      maximumDeliveryDistanceKm: "25.000",
+      serviceFeeRateBps: 500,
+      serviceFeeCap: 1000n,
+      isActive: true,
+    },
+    create: {
+      id: "default",
+      deliveryBaseFee: 1000n,
+      deliveryFeePerKm: 100n,
+      minimumDeliveryFee: 1500n,
+      maximumDeliveryDistanceKm: "25.000",
+      serviceFeeRateBps: 500,
+      serviceFeeCap: 1000n,
+      isActive: true,
+    },
+  });
+
   const firstCustomer = await prisma.customer.create({
     data: {
       businessAccountId,
@@ -606,7 +632,9 @@ after(async () => {
       },
     });
   }
-
+  await prisma.platformPricingConfig.deleteMany({
+    where: { id: "default" },
+  });
   await prisma.$disconnect();
 });
 
@@ -632,7 +660,7 @@ test("creates an order and reserves inventory", async () => {
 
   assert.equal(body.data.subtotal, "5000");
   assert.equal(body.data.discount, "500");
-  assert.equal(body.data.total, "4500");
+  assert.equal(body.data.total, "6225");
   assert.equal(body.data.currency, "NGN");
 
   assert.equal(body.data.items.length, 1);
@@ -655,6 +683,20 @@ test("creates an order and reserves inventory", async () => {
 
   assert.ok(savedOrder);
   assert.equal(savedOrder.items.length, 1);
+  assert.equal(savedOrder.deliveryFee, 1500n);
+  assert.equal(savedOrder.serviceFee, 225n);
+  assert.equal(savedOrder.serviceFeeRateBps, 500);
+  assert.equal(savedOrder.deliveryDistanceKm?.toString(), "0");
+  assert.equal(
+    savedOrder.deliveryDistanceSource,
+    "STRAIGHT_LINE_ESTIMATE",
+  );
+
+  assert.equal(savedOrder.pickupStreetAddress, "15 Test Market Road");
+  assert.equal(savedOrder.pickupCity, "Ilorin");
+  assert.equal(savedOrder.pickupState, "Kwara");
+  assert.equal(savedOrder.pickupLatitude?.toString(), "-8.4966");
+  assert.equal(savedOrder.pickupLongitude?.toString(), "4.5421");
 });
 
 test("returns the existing order for an identical idempotent request", async () => {
@@ -1484,6 +1526,52 @@ test("rejects delivery requests for orders not ready for delivery", async () => 
   assert.equal(delivery, null);
 });
 
+test("uses the order pickup snapshot when the business location changes", async () => {
+  await setBusinessPickupLocation(businessAccountId);
+
+  const product = await createTestProduct();
+  const order = await createReadyOrder(product.id);
+
+  try {
+    // Change the business pickup location after the order was created.
+    await prisma.businessAccount.update({
+      where: { id: businessAccountId },
+      data: {
+        pickupStreetAddress: "99 Updated Business Road",
+        pickupCity: "Lagos",
+        pickupState: "Lagos",
+        pickupLandmark: "Updated Landmark",
+        pickupLatitude: "6.5244",
+        pickupLongitude: "3.3792",
+      },
+    });
+
+    const response = await fetch(
+      `${baseUrl}/orders/${order.id}/delivery`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+      },
+    );
+
+    assert.equal(response.status, 200);
+
+    const delivery = await prisma.delivery.findUnique({
+      where: { orderId: order.id },
+    });
+
+    assert.ok(delivery);
+    assert.equal(delivery.pickupStreetAddress, "15 Test Market Road");
+    assert.equal(delivery.pickupCity, "Ilorin");
+    assert.equal(delivery.pickupState, "Kwara");
+    assert.equal(delivery.pickupLandmark, "Near Central Market");
+    assert.equal(delivery.pickupLatitude?.toString(), "-8.4966");
+    assert.equal(delivery.pickupLongitude?.toString(), "4.5421");
+  } finally {
+    await setBusinessPickupLocation(businessAccountId);
+  }
+});
+
 test("allows an owner to assign an approved rider to a requested delivery", async () => {
   await setBusinessPickupLocation(businessAccountId);
 
@@ -1869,8 +1957,9 @@ test("does not duplicate assignment history when the same rider is assigned agai
   assert.equal(assignmentHistoryCount, 1);
 });
 
-test("rejects delivery requests when business pickup location is incomplete", async () => {
+test("rejects order creation when business pickup location is incomplete", async () => {
   const product = await createTestProduct();
+
   await prisma.businessAccount.update({
     where: { id: businessAccountId },
     data: {
@@ -1882,27 +1971,52 @@ test("rejects delivery requests when business pickup location is incomplete", as
       pickupLongitude: null,
     },
   });
-  const order = await createReadyOrder(product.id);
 
-  const response = await fetch(`${baseUrl}/orders/${order.id}/delivery`, {
-    method: "POST",
-    headers: authHeaders(),
+  try {
+    const response = await createOrderRequest(
+      createOrderPayload(product.id),
+    );
+
+    const body = await response.json();
+
+    assert.equal(response.status, 409);
+    assert.equal(body.success, false);
+    assert.equal(
+      body.message,
+      "Configure a complete pickup address and valid coordinates before accepting orders.",
+    );
+  } finally {
+    await setBusinessPickupLocation(businessAccountId);
+  }
+});
+
+test("rejects order creation when platform pricing is inactive", async () => {
+  const product = await createTestProduct();
+
+  await prisma.platformPricingConfig.update({
+    where: { id: "default" },
+    data: { isActive: false },
   });
 
-  const body = await response.json();
+  try {
+    const response = await createOrderRequest(
+      createOrderPayload(product.id),
+    );
 
-  assert.equal(response.status, 409);
-  assert.equal(body.success, false);
-  assert.equal(
-    body.message,
-    "Complete the business pickup location before requesting delivery.",
-  );
+    const body = await response.json();
 
-  const delivery = await prisma.delivery.findUnique({
-    where: { orderId: order.id },
-  });
-
-  assert.equal(delivery, null);
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(
+      body.message,
+      "Checkout is temporarily unavailable. Please try again later.",
+    );
+  } finally {
+    await prisma.platformPricingConfig.update({
+      where: { id: "default" },
+      data: { isActive: true },
+    });
+  }
 });
 
 test("allows an assigned rider to complete the delivery lifecycle", async () => {

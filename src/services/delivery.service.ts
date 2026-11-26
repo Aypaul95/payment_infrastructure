@@ -34,16 +34,6 @@ export async function requestDelivery(
         },
         include: {
           delivery: true,
-          businessAccount: {
-            select: {
-              pickupStreetAddress: true,
-              pickupCity: true,
-              pickupState: true,
-              pickupLandmark: true,
-              pickupLatitude: true,
-              pickupLongitude: true,
-            },
-          },
         },
       });
 
@@ -59,7 +49,7 @@ export async function requestDelivery(
         throw new Error("ORDER_NOT_READY_FOR_DELIVERY");
       }
 
-      const pickup = order.businessAccount;
+      const pickup = order;
 
       if (
         !pickup.pickupStreetAddress ||

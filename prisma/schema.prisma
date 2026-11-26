@@ -50,6 +50,11 @@ enum OrderStatus {
   REFUNDED
 }
 
+enum DeliveryDistanceSource {
+  STRAIGHT_LINE_ESTIMATE
+  ROAD_ROUTE
+}
+
 enum RiderApprovalStatus {
   PENDING
   APPROVED
@@ -321,7 +326,7 @@ model InventoryMovement {
 }
 
 model Order {
-  id                     String      @id @default(cuid())
+  id                     String   @id @default(cuid())
   businessAccountId      String
   customerId             String
   // Original saved address reference; intentionally not a foreign key.
@@ -332,18 +337,32 @@ model Order {
   deliveryCity           String
   deliveryState          String
   deliveryLandmark       String?
-  deliveryLatitude       Decimal     @db.Decimal(10, 7)
-  deliveryLongitude      Decimal     @db.Decimal(10, 7)
+  deliveryLatitude       Decimal  @db.Decimal(10, 7)
+  deliveryLongitude      Decimal  @db.Decimal(10, 7)
+  // Vendor pickup location snapshot
+  pickupStreetAddress    String?
+  pickupCity             String?
+  pickupState            String?
+  pickupLandmark         String?
+  pickupLatitude         Decimal? @db.Decimal(10, 7)
+  pickupLongitude        Decimal? @db.Decimal(10, 7)
+
+  // Delivery pricing snapshot (amounts in kobo)
+  deliveryDistanceKm     Decimal?                @db.Decimal(10, 3)
+  deliveryDistanceSource DeliveryDistanceSource?
+  deliveryFee            BigInt?
+  serviceFee             BigInt?
+  serviceFeeRateBps      Int?
   orderNumber            String
   idempotencyKey         String
-  status                 OrderStatus @default(PENDING_PAYMENT)
+  status                 OrderStatus             @default(PENDING_PAYMENT)
   subtotal               BigInt
-  discount               BigInt      @default(0)
+  discount               BigInt                  @default(0)
   total                  BigInt
-  currency               String      @default("NGN")
+  currency               String                  @default("NGN")
   notes                  String?
-  createdAt              DateTime    @default(now())
-  updatedAt              DateTime    @updatedAt
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
 
   businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
   customer        Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
@@ -492,7 +511,7 @@ model Rider {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
-   vehicles       RiderVehicle[]
+  vehicles       RiderVehicle[]
   kycSubmissions RiderKycSubmission[]
   deliveries     Delivery[]
   earnings       RiderEarning[]
@@ -580,27 +599,27 @@ model CustomerAddress {
 }
 
 model RiderEarning {
-  id                 String             @id @default(cuid())
-  riderId             String
-  deliveryId          String             @unique
+  id         String @id @default(cuid())
+  riderId    String
+  deliveryId String @unique
 
-  baseAmount          BigInt            @default(0)
-  distanceKm         Decimal            @db.Decimal(10, 3)
-  ratePerKm         BigInt             @default(0)
-  distanceAmount     BigInt            @default(0)
-  incentiveAmount    BigInt            @default(0)
+  baseAmount      BigInt  @default(0)
+  distanceKm      Decimal @db.Decimal(10, 3)
+  ratePerKm       BigInt  @default(0)
+  distanceAmount  BigInt  @default(0)
+  incentiveAmount BigInt  @default(0)
 
-  grossAmount        BigInt
-  commissionAmount   BigInt            @default(0)
-  deductionAmount   BigInt            @default(0)
-  netAmount         BigInt
+  grossAmount      BigInt
+  commissionAmount BigInt @default(0)
+  deductionAmount  BigInt @default(0)
+  netAmount        BigInt
 
-  currency           String            @default("NGN")
-  status             RiderEarningStatus @default(PENDING)
+  currency String             @default("NGN")
+  status   RiderEarningStatus @default(PENDING)
 
-  earnedAt           DateTime          @default(now())
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
+  earnedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   rider    Rider    @relation(fields: [riderId], references: [id], onDelete: Restrict)
   delivery Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
@@ -623,23 +642,23 @@ model RiderBankAccount {
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
-  rider Rider @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  rider       Rider             @relation(fields: [riderId], references: [id], onDelete: Restrict)
   settlements RiderSettlement[]
 
-@@index([status])
-@@index([riderId, createdAt])
+  @@index([status])
+  @@index([riderId, createdAt])
 }
 
 model RiderWallet {
   id               String   @id @default(cuid())
-  riderId           String   @unique
-  availableBalance  BigInt   @default(0)
-  reservedBalance   BigInt   @default(0)
-  currency          String   @default("NGN")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  riderId          String   @unique
+  availableBalance BigInt   @default(0)
+  reservedBalance  BigInt   @default(0)
+  currency         String   @default("NGN")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  rider        Rider                   @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  rider        Rider                    @relation(fields: [riderId], references: [id], onDelete: Restrict)
   transactions RiderWalletTransaction[]
   settlements  RiderSettlement[]
 
@@ -647,14 +666,14 @@ model RiderWallet {
 }
 
 model RiderWalletTransaction {
-  id          String                       @id @default(cuid())
+  id          String                     @id @default(cuid())
   walletId    String
   type        RiderWalletTransactionType
   amount      BigInt
-  reference   String                       @unique
+  reference   String                     @unique
   description String?
-  currency    String                       @default("NGN")
-  createdAt   DateTime                     @default(now())
+  currency    String                     @default("NGN")
+  createdAt   DateTime                   @default(now())
 
   wallet RiderWallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
 
@@ -663,26 +682,39 @@ model RiderWalletTransaction {
 }
 
 model RiderSettlement {
-  id                  String                @id @default(cuid())
-  riderId             String
-  walletId            String
-  bankAccountId       String
-  amount              BigInt
-  currency            String                @default("NGN")
-  status              RiderSettlementStatus @default(PENDING)
-  reference           String                @unique
-  idempotencyKey      String
-  paystackTransferCode String?              @unique
-  failureReason       String?
-  processedAt         DateTime?
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
+  id                   String                @id @default(cuid())
+  riderId              String
+  walletId             String
+  bankAccountId        String
+  amount               BigInt
+  currency             String                @default("NGN")
+  status               RiderSettlementStatus @default(PENDING)
+  reference            String                @unique
+  idempotencyKey       String
+  paystackTransferCode String?               @unique
+  failureReason        String?
+  processedAt          DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
 
-  rider       Rider           @relation(fields: [riderId], references: [id], onDelete: Restrict)
-  wallet      RiderWallet     @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  rider       Rider            @relation(fields: [riderId], references: [id], onDelete: Restrict)
+  wallet      RiderWallet      @relation(fields: [walletId], references: [id], onDelete: Restrict)
   bankAccount RiderBankAccount @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
 
+  @@unique([riderId, idempotencyKey])
   @@index([riderId, status, createdAt])
   @@index([status, createdAt])
-  @@unique([riderId, idempotencyKey])
+}
+
+model PlatformPricingConfig {
+  id                        String   @id
+  deliveryBaseFee           BigInt
+  deliveryFeePerKm          BigInt
+  minimumDeliveryFee        BigInt
+  maximumDeliveryDistanceKm Decimal  @db.Decimal(10, 3)
+  serviceFeeRateBps         Int
+  serviceFeeCap             BigInt
+  isActive                  Boolean  @default(false)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 }
