@@ -136,6 +136,47 @@ enum RiderSettlementStatus {
   CANCELLED
 }
 
+enum VendorBankAccountStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum VendorLedgerBucket {
+  AVAILABLE
+  RESERVED
+}
+
+enum VendorLedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum VendorLedgerEntryType {
+  ORDER_CREDIT
+  SETTLEMENT_RESERVE
+  SETTLEMENT_RELEASE
+  SETTLEMENT_PAYOUT
+  REVERSAL
+  ADJUSTMENT
+}
+
+enum VendorSettlementStatus {
+  PENDING
+  PROCESSING
+  SUCCESSFUL
+  FAILED
+  REVERSED
+  CANCELLED
+  REQUIRES_RECONCILIATION
+}
+
+enum PlatformRevenueEntryType {
+  SERVICE_FEE_RECOGNITION
+  REVERSAL
+  ADJUSTMENT
+}
+
 enum DeliveryActorType {
   RIDER
   BUSINESS_USER
@@ -166,11 +207,15 @@ model BusinessAccount {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  users     BusinessUser[]
-  customers Customer[]
-  payments  Payment[]
-  products  Product[]
-  orders    Order[]
+  users                  BusinessUser[]
+  customers              Customer[]
+  payments               Payment[]
+  products               Product[]
+  orders                 Order[]
+  vendorBankAccounts     VendorBankAccount[]
+  vendorLedgerEntries    VendorLedgerEntry[]
+  vendorSettlements      VendorSettlement[]
+  platformRevenueEntries PlatformRevenueEntry[]
 }
 
 model BusinessUser {
@@ -370,7 +415,11 @@ model Order {
   payments        Payment[]
   delivery        Delivery?
 
+  vendorLedgerEntries    VendorLedgerEntry[]
+  platformRevenueEntries PlatformRevenueEntry[]
+
   @@unique([businessAccountId, orderNumber])
+  @@unique([id, businessAccountId])
   @@unique([businessAccountId, idempotencyKey])
   @@index([businessAccountId, status])
   @@index([customerId, createdAt])
@@ -717,4 +766,100 @@ model PlatformPricingConfig {
   isActive                  Boolean  @default(false)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
+}
+
+model VendorBankAccount {
+  id                     String                  @id @default(cuid())
+  businessAccountId      String
+  bankCode               String
+  bankName               String
+  encryptedAccountNumber String
+  maskedAccountNumber    String
+  accountName            String
+  recipientCode          String?                 @unique
+  currency               String                  @default("NGN")
+  status                 VendorBankAccountStatus @default(PENDING)
+  verifiedAt             DateTime?
+  isDefault              Boolean                 @default(false)
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  businessAccount BusinessAccount    @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  settlements     VendorSettlement[]
+
+  @@unique([id, businessAccountId])
+  @@index([businessAccountId, status])
+  @@index([businessAccountId, isDefault])
+}
+
+model VendorSettlement {
+  id                   String                 @id @default(cuid())
+  businessAccountId    String
+  bankAccountId        String
+  amount               BigInt
+  currency             String                 @default("NGN")
+  status               VendorSettlementStatus @default(PENDING)
+  reference            String                 @unique
+  idempotencyKey       String
+  paystackTransferCode String?                @unique
+  failureReason        String?
+  processedAt          DateTime?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  businessAccount BusinessAccount     @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  bankAccount     VendorBankAccount   @relation(fields: [bankAccountId, businessAccountId], references: [id, businessAccountId], onDelete: Restrict)
+  ledgerEntries   VendorLedgerEntry[]
+
+  @@unique([businessAccountId, idempotencyKey])
+  @@unique([id, businessAccountId])
+  @@index([businessAccountId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model VendorLedgerEntry {
+  id                String  @id @default(cuid())
+  businessAccountId String
+  orderId           String?
+  settlementId      String?
+  recognitionKey    String? @unique
+
+  bucket      VendorLedgerBucket
+  direction   VendorLedgerDirection
+  type        VendorLedgerEntryType
+  amount      BigInt
+  currency    String                @default("NGN")
+  reference   String                @unique
+  description String?
+  createdAt   DateTime              @default(now())
+
+  businessAccount BusinessAccount   @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  order           Order?            @relation(fields: [orderId, businessAccountId], references: [id, businessAccountId], onDelete: Restrict)
+  settlement      VendorSettlement? @relation(fields: [settlementId, businessAccountId], references: [id, businessAccountId], onDelete: Restrict)
+
+  @@index([businessAccountId, bucket, createdAt])
+  @@index([businessAccountId, type, createdAt])
+  @@index([orderId])
+  @@index([settlementId])
+}
+
+model PlatformRevenueEntry {
+  id                String  @id @default(cuid())
+  businessAccountId String
+  orderId           String
+  recognitionKey    String? @unique
+
+  type        PlatformRevenueEntryType
+  direction   VendorLedgerDirection
+  amount      BigInt
+  currency    String                   @default("NGN")
+  reference   String                   @unique
+  description String?
+  createdAt   DateTime                 @default(now())
+
+  businessAccount BusinessAccount @relation(fields: [businessAccountId], references: [id], onDelete: Restrict)
+  order           Order           @relation(fields: [orderId, businessAccountId], references: [id, businessAccountId], onDelete: Restrict)
+
+  @@index([businessAccountId, type, createdAt])
+  @@index([orderId])
 }

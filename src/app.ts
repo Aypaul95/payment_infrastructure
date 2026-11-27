@@ -14,7 +14,7 @@ import { orderRouter } from "./routes/order.routes";
 import { riderRouter } from "./routes/rider.routes";
 import { businessLocationRouter } from "./routes/business-location.routes";
 import { paystackWebhookRouter } from "./routes/paystack-webhook.routes";
-
+import { vendorFinancialRouter } from "./routes/vendor-financial.routes";
 const app = express();
 
 app.disable("x-powered-by");
@@ -44,6 +44,7 @@ app.use("/products", productRouter);
 app.use("/inventory", inventoryRouter);
 app.use("/payments", paymentRouter);
 app.use("/orders", orderRouter);
+app.use("/vendor-financials", vendorFinancialRouter);
 
 // Public health check
 app.get("/health", (_req, res) => {
