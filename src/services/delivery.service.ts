@@ -6,6 +6,7 @@ import {
 } from "./delivery-confirmation.service";
 import { encryptSmsPayload } from "../lib/sms-encryption";
 import { toTermiiPhoneNumber } from "../lib/phone";
+import { recordVendorLedgerEntry } from "./vendor-ledger.service";
 
 function getPrismaErrorCode(error: unknown): string | undefined {
   if (
@@ -296,7 +297,22 @@ export async function progressRiderDelivery(
         order: {
           select: {
             id: true,
+            businessAccountId: true,
             status: true,
+            subtotal: true,
+            discount: true,
+            total: true,
+            currency: true,
+            serviceFee: true,
+            payments: {
+              where: { status: "SUCCESSFUL" },
+              select: {
+                id: true,
+                amount: true,
+                currency: true,
+                status: true,
+              },
+            },
           },
         },
       },
@@ -469,6 +485,62 @@ export async function progressRiderDelivery(
         },
       },
     });
+
+    if (action === "COMPLETE") {
+      const order = delivery.order;
+
+      // Require exactly one successful payment matching the order.
+      if (
+        order.payments.length !== 1 ||
+        order.payments[0].amount !== order.total ||
+        order.payments[0].currency !== order.currency
+      ) {
+        throw new Error("ORDER_PAYMENT_REQUIRES_RECONCILIATION");
+      }
+
+      // A missing service-fee snapshot must never be treated as zero.
+      if (order.serviceFee === null) {
+        throw new Error("ORDER_REVENUE_REQUIRES_RECONCILIATION");
+      }
+
+      const vendorAmount =
+        order.subtotal > order.discount
+          ? order.subtotal - order.discount
+          : 0n;
+
+      // Recognise vendor proceeds only when positive.
+      if (vendorAmount > 0n) {
+        await recordVendorLedgerEntry(tx, {
+          businessAccountId: order.businessAccountId,
+          orderId: order.id,
+          bucket: "AVAILABLE",
+          direction: "CREDIT",
+          type: "ORDER_CREDIT",
+          amount: vendorAmount,
+          reference: `ORDER-${order.id}-VENDOR-RECOGNITION`,
+          recognitionKey: `order:${order.id}:vendor-credit:v1`,
+          description: "Vendor proceeds recognised after delivery confirmation.",
+          currency: order.currency,
+        });
+      }
+
+      // Recognise platform service revenue only when positive.
+      if (order.serviceFee > 0n) {
+        await tx.platformRevenueEntry.create({
+          data: {
+            businessAccountId: order.businessAccountId,
+            orderId: order.id,
+            type: "SERVICE_FEE_RECOGNITION",
+            direction: "CREDIT",
+            amount: order.serviceFee,
+            reference: `ORDER-${order.id}-SERVICE-FEE-RECOGNITION`,
+            recognitionKey: `order:${order.id}:service-fee:v1`,
+            description: "Platform service fee recognised after delivery confirmation.",
+            currency: order.currency,
+          },
+        });
+      }
+    }
 
       if (confirmationNotification) {
           await tx.smsOutbox.create({
